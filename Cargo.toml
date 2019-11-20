@@ -9,3 +9,7 @@ name = "fimpp"
 
 [dependencies]
 nom = "5.0.1"
+cranelift-module = "0.50.0"
+cranelift-faerie = "0.50.0"
+cranelift = "0.50.0"
+target-lexicon = "0.9.0"
