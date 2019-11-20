@@ -1,7 +1,7 @@
 # Rust impl of FiM++
 
 - Ahead-of-time compiled
-- elf/llvm backend
+- [cranelift](https://github.com/bytecodealliance/cranelift) backend
 
 source -> ast -> backend
 
