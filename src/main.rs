@@ -164,6 +164,14 @@ fn send<'a, B: Backend>(report: &'a Report, name: &str, sender: &mut Sender<B>) 
     builder.switch_to_block(entry_ebb);
     builder.seal_block(entry_ebb);
 
+    // store newline for printing
+    let newline: Vec<_> = "\n\0".bytes().collect();
+    sender.data_context.define(newline.into_boxed_slice());
+    let id = sender.module.declare_data("newline", Linkage::Export, false, Option::None)?;
+    sender.module.define_data(id, &sender.data_context)?;
+    sender.data_context.clear();
+    sender.module.finalize_definitions();
+
     send_paragraph(&report.paragraphs[0], sender, &mut builder);
 
     let zero = builder.ins().iconst(int, 0);
@@ -196,7 +204,7 @@ fn send_statement<'a, B: Backend>(statement: &'a str, sender: &mut Sender<B>, bu
     s.push('\0' as u8);
 
     sender.data_context.define(s.into_boxed_slice());
-    let id = sender.module.declare_data("string", Linkage::Export, false, Option::None)?;
+    let id = sender.module.declare_data(statement, Linkage::Export, false, Option::None)?;
     sender.module.define_data(id, &sender.data_context)?;
     sender.data_context.clear();
     sender.module.finalize_definitions();
@@ -206,7 +214,7 @@ fn send_statement<'a, B: Backend>(statement: &'a str, sender: &mut Sender<B>, bu
     let callee = sender.module.declare_function("puts", Linkage::Import, &sig)?;
     let local_callee = sender.module.declare_func_in_func(callee, builder.func);
 
-    let sym = sender.module.declare_data("string", Linkage::Export, false, Option::None)?;
+    let sym = sender.module.declare_data(statement, Linkage::Export, false, Option::None)?;
     let local_id = sender.module.declare_data_in_func(sym, builder.func);
     let var = builder.ins().symbol_value(sender.module.target_config().pointer_type(), local_id);
 
@@ -299,8 +307,8 @@ fn report_declaration(s: &str) -> IResult<&str, &str> {
 fn paragraph(s: &str) -> IResult<&str, Paragraph> {
     map(tuple((
         terminated(paragraph_declaration, whitespace0),
-        terminated(many0(statement), whitespace0),
-        paragraph_closing
+        many0(statement),
+        paragraph_closing,
     )), |(declaration, statements, closing)| Paragraph {
         name: declaration,
         closing_name: closing,
@@ -313,7 +321,7 @@ fn paragraph_declaration(s: &str) -> IResult<&str, &str> {
 }
 
 fn statement(s: &str) -> IResult<&str, &str> {
-    terminated(preceded(preceded(print, whitespace0), literal), punctuation)(s)
+    terminated(terminated(preceded(preceded(print, whitespace0), literal), punctuation), whitespace0)(s)
 }
 
 fn literal(s: &str) -> IResult<&str, &str> {
@@ -377,7 +385,15 @@ fn parses_paragraph() {
         name: "how to fly",
         closing_name: "how to fly",
         statements: vec!["Fly!"],
-    })))
+    })));
+    assert_eq!(paragraph("Today I learned how to fly.\
+    I said \"Fly1!\".\
+    I said \"Fly2!\".\
+    That's all about how to fly."), Ok(("", Paragraph {
+        name: "how to fly",
+        closing_name: "how to fly",
+        statements: vec!["Fly1!", "Fly2!"],
+    })));
 }
 
 #[test]
@@ -395,30 +411,4 @@ fn parses_report() {
         }],
         writer: " Twilight Sparkle",
     })));
-}
-
-
-#[test]
-fn sends_hello_canterlot() {
-    let out = capture_stdout(|| {
-        let report = read("Dear Princes Celestia: An example letter.\
-        Today I learned how to fly:
-            I said \"Fly!\"!
-        That's all about how to fly!
-    Your faithful student: Twilight Sparkle.").unwrap();
-        send_here(&report, "test");
-    }).unwrap();
-
-    assert_eq!(out, "Fly!");
-}
-
-#[cfg(test)]
-fn capture_stdout(f: impl FnOnce() -> ()) -> io::Result<String> {
-    use gag::BufferRedirect;
-
-    let mut buf = BufferRedirect::stdout()?;
-    f();
-    let mut out = String::new();
-    buf.read_to_string(&mut out)?;
-    Ok(out)
 }
