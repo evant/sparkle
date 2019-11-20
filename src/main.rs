@@ -1,74 +1,28 @@
-use std::{fmt, io, mem};
 use std::borrow::{Borrow, Cow};
-use std::env::{args, temp_dir};
+use std::env::args;
 use std::error::Error;
 use std::fmt::Formatter;
-use std::fs::{File, read_to_string};
-use std::io::{Read, Write};
-use std::iter::Product;
+use std::fs::{read_to_string, File};
 use std::path::Path;
 use std::process::exit;
 use std::str::FromStr;
+use std::{fmt, mem};
 
-use cranelift::prelude::*;
-use cranelift::prelude::{AbiParam, FunctionBuilder, FunctionBuilderContext, isa, Type};
-use cranelift::prelude::isa::LookupError;
 use cranelift::prelude::settings::{self, Configurable};
-use cranelift_faerie::{FaerieBackend, FaerieBuilder, FaerieProduct, FaerieTrapCollection};
-use cranelift_module::{Backend, DataContext, default_libcall_names, FuncId, Linkage, Module, ModuleError};
+use cranelift::prelude::*;
+use cranelift::prelude::{isa, AbiParam, FunctionBuilder, FunctionBuilderContext};
+use cranelift_faerie::{FaerieBackend, FaerieBuilder, FaerieTrapCollection};
+use cranelift_module::{default_libcall_names, Backend, DataContext, FuncId, Linkage, Module};
 use cranelift_simplejit::{SimpleJITBackend, SimpleJITBuilder};
-use nom::{Compare, InputLength, InputTake, IResult};
-use nom::branch::alt;
-use nom::bytes::complete::{is_a, is_not, tag, take_till, take_till1, take_until, take_while, take_while1};
-use nom::character::complete::{anychar, space1};
-use nom::character::is_space;
-use nom::combinator::{complete, map, map_res, not, opt, peek, recognize};
-use nom::error::{ErrorKind, ParseError};
-use nom::multi::{many0, many1, many_till, separated_list};
-use nom::number::complete::{double, float, recognize_float};
-use nom::sequence::{delimited, delimitedc, pair, preceded, separated_pair, terminated, terminatedc, tuple};
 use target_lexicon::Triple;
 
-use crate::Options::Gallop;
-use crate::ReportError::{ReadError, SendError};
+use crate::error::ReportError;
+use crate::pst::Report;
 
-#[derive(Debug)]
-enum ReportError<'a> {
-    ReadError(nom::Err<(&'a str, ErrorKind)>),
-    SendError(String),
-}
-
-impl fmt::Display for ReportError<'_> {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        unimplemented!()
-    }
-}
-
-impl Error for ReportError<'_> {}
-
-impl<'a> From<nom::Err<(&'a str, ErrorKind)>> for ReportError<'a> {
-    fn from(e: nom::Err<(&'a str, ErrorKind)>) -> Self {
-        ReadError(e)
-    }
-}
-
-impl From<target_lexicon::ParseError> for ReportError<'_> {
-    fn from(e: target_lexicon::ParseError) -> Self {
-        SendError(e.to_string())
-    }
-}
-
-impl From<cranelift::prelude::isa::LookupError> for ReportError<'_> {
-    fn from(e: cranelift::prelude::isa::LookupError) -> Self {
-        SendError(e.to_string())
-    }
-}
-
-impl From<cranelift_module::ModuleError> for ReportError<'_> {
-    fn from(e: cranelift_module::ModuleError) -> Self {
-        SendError(e.to_string())
-    }
-}
+mod error;
+mod pst;
+mod reader;
+mod sender;
 
 enum Options {
     Send,
@@ -78,7 +32,7 @@ enum Options {
 fn main() {
     let args: Vec<_> = args().skip(1).collect();
     if args.len() < 2 {
-        println!("{}", "usage: fimpp [send|gallop] report.fpp");
+        println!("usage: fimpp [send|gallop] report.fpp");
         return;
     }
     let option = args[0].borrow();
@@ -97,374 +51,10 @@ fn main() {
     }
     let report = read_to_string(path).expect("error opening report");
     let name = path.file_stem().unwrap().to_str().unwrap();
-    let ast = read(&report).unwrap();
+    let ast = reader::read(&report).unwrap();
 
     match option {
-        Options::Send => send_out(&ast, name).unwrap(),
-        Options::Gallop => send_here(&ast, name).unwrap(),
+        Options::Send => sender::send_out(&ast, name).unwrap(),
+        Options::Gallop => sender::gallop(&ast, name).unwrap(),
     }
-}
-
-
-fn read(report_text: &str) -> Result<Report, ReportError> {
-    let (_, ast) = report(report_text)?;
-    return Ok(ast);
-}
-
-fn send_out<'a>(report: &'a Report, name: &str) -> Result<(), ReportError<'a>> {
-    let mut flag_builder = settings::builder();
-    flag_builder.enable("is_pic").unwrap();
-    let isa_builder = isa::lookup(Triple::from_str("x86_64-unknown-unknown-elf")?)?;
-    let isa = isa_builder.finish(settings::Flags::new(flag_builder));
-    let builder = FaerieBuilder::new(
-        isa,
-        name.to_owned(),
-        FaerieTrapCollection::Disabled,
-        default_libcall_names(),
-    ).unwrap();
-    let mut module = Module::<FaerieBackend>::new(builder);
-    let mut data_context = DataContext::new();
-    let mut sender = Sender {
-        module,
-        data_context,
-    };
-    send(report, name, &mut sender)?;
-    let product = sender.module.finish();
-    let file = File::create(name.to_owned() + ".o").expect("error opening file");
-    product.write(file).expect("error writing to file");
-
-    Ok(())
-}
-
-fn send_here<'a>(report: &'a Report, name: &str) -> Result<(), ReportError<'a>> {
-    let builder = SimpleJITBuilder::new(default_libcall_names());
-    let mut module = Module::<SimpleJITBackend>::new(builder);
-    let mut data_context = DataContext::new();
-    let mut sender = Sender {
-        module,
-        data_context,
-    };
-    let id = send(report, name, &mut sender)?;
-    let code = sender.module.get_finalized_function(id);
-    let code = unsafe { mem::transmute::<_, fn() -> (isize)>(code) };
-
-    code();
-
-    Ok(())
-}
-
-fn send<'a, B: Backend>(report: &'a Report, name: &str, sender: &mut Sender<B>) -> Result<FuncId, ReportError<'a>> {
-    let mut ctx = sender.module.make_context();
-    let mut builder_context = FunctionBuilderContext::new();
-    let int = sender.module.target_config().pointer_type();
-    ctx.func.signature.returns.push(AbiParam::new(int));
-
-    let mut builder = FunctionBuilder::new(&mut ctx.func, &mut builder_context);
-    let entry_ebb = builder.create_ebb();
-    builder.append_ebb_params_for_function_params(entry_ebb);
-    builder.switch_to_block(entry_ebb);
-    builder.seal_block(entry_ebb);
-
-    // store newline for printing
-    let newline: Vec<_> = "\n\0".bytes().collect();
-    sender.data_context.define(newline.into_boxed_slice());
-    let id = sender.module.declare_data("newline", Linkage::Export, false, Option::None)?;
-    sender.module.define_data(id, &sender.data_context)?;
-    sender.data_context.clear();
-    sender.module.finalize_definitions();
-
-    send_paragraph(&report.paragraphs[0], sender, &mut builder);
-
-    let zero = builder.ins().iconst(int, 0);
-    let var = Variable::new(0);
-    builder.declare_var(var, int);
-    builder.def_var(var, zero);
-    let return_value = builder.use_var(var);
-    builder.ins().return_(&[return_value]);
-
-    let id = sender.module.declare_function("main", Linkage::Export, &ctx.func.signature)?;
-    sender.module.define_function(id, &mut ctx)?;
-
-    sender.module.clear_context(&mut ctx);
-    sender.module.finalize_definitions();
-
-    Ok(id)
-}
-
-fn send_paragraph<'a, B: Backend>(paragraph: &'a Paragraph, sender: &mut Sender<B>, builder: &mut FunctionBuilder) -> Result<(), ReportError<'a>> {
-    for statement in paragraph.statements.iter() {
-        send_statement(statement, sender, builder)?;
-    }
-
-    Ok(())
-}
-
-fn send_statement<'a, B: Backend>(statement: &Literal<'a>, sender: &mut Sender<B>, builder: &mut FunctionBuilder) -> Result<(), ReportError<'a>> {
-    let display = statement.to_cow_string();
-
-    // We need to append a null byte at the end for libc.
-    let mut s: Vec<_> = display.bytes().into_iter().collect();
-    s.push('\0' as u8);
-
-    sender.data_context.define(s.into_boxed_slice());
-    let id = sender.module.declare_data(&display, Linkage::Export, false, Option::None)?;
-    sender.module.define_data(id, &sender.data_context)?;
-    sender.data_context.clear();
-    sender.module.finalize_definitions();
-
-    let mut sig = sender.module.make_signature();
-    sig.params.push(AbiParam::new(sender.module.target_config().pointer_type()));
-    let callee = sender.module.declare_function("puts", Linkage::Import, &sig)?;
-    let local_callee = sender.module.declare_func_in_func(callee, builder.func);
-
-    let sym = sender.module.declare_data(&display, Linkage::Export, false, Option::None)?;
-    let local_id = sender.module.declare_data_in_func(sym, builder.func);
-    let var = builder.ins().symbol_value(sender.module.target_config().pointer_type(), local_id);
-
-    let call = builder.ins().call(local_callee, &[var]);
-
-    Ok(())
-}
-
-struct Sender<B: Backend> {
-    module: Module<B>,
-    data_context: DataContext,
-}
-
-#[derive(Debug, PartialEq)]
-struct Paragraph<'a> {
-    name: &'a str,
-    closing_name: &'a str,
-    statements: Vec<Literal<'a>>,
-}
-
-#[derive(Debug, PartialEq)]
-struct Report<'a> {
-    name: &'a str,
-    paragraphs: Vec<Paragraph<'a>>,
-    writer: &'a str,
-}
-
-#[derive(Debug, PartialEq)]
-enum Literal<'a> {
-    String(&'a str),
-    Number(f64),
-}
-
-impl<'a> Literal<'a> {
-    fn to_cow_string(&self) -> Cow<'a, str> {
-        match self {
-            Literal::String(s) => (*s).into(),
-            Literal::Number(n) => n.to_string().into(),
-        }
-    }
-}
-
-fn is_keyword(s: &str) -> bool {
-    match s {
-        "Dear" => true,
-        _ => false
-    }
-}
-
-fn is_punctuation(s: char) -> bool {
-    match s {
-        '!' | ',' | '.' | ':' | '?' | '…' | '‽' => true,
-        _ => false
-    }
-}
-
-fn does(s: &str) -> IResult<&str, &str> {
-    alt((tag("does"), tag("do"), tag("did")))(s)
-}
-
-fn print(s: &str) -> IResult<&str, &str> {
-    alt((tag("I remembered"), tag("I said"), tag("I sang"), tag("I wrote")))(s)
-}
-
-fn identifier(s: &str) -> IResult<&str, &str> {
-    recognize(separated_list(space1, word))(s)
-}
-
-fn word(s: &str) -> IResult<&str, &str> {
-    recognize(many1(not_space_or_punctuation))(s)
-}
-
-fn whitespace0(s: &str) -> IResult<&str, &str> {
-    recognize(many0(alt((whitespace, line_comment, multiline_comment))))(s)
-}
-
-fn whitespace(s: &str) -> IResult<&str, &str> {
-    is_a(" \t\r\n")(s)
-}
-
-fn not_space_or_punctuation(s: &str) -> IResult<&str, &str> {
-    is_not(" \t\r\n!,.:?…‽")(s)
-}
-
-fn punctuation(s: &str) -> IResult<&str, &str> {
-    take_while(is_punctuation)(s)
-}
-
-fn report(s: &str) -> IResult<&str, Report> {
-    map(complete(tuple((
-        terminated(report_declaration, whitespace0),
-        terminated(many0(paragraph), whitespace0),
-        report_closing
-    ))), |(declaration, paragraphs, closing)| Report {
-        name: declaration,
-        writer: closing,
-        paragraphs,
-    })(s)
-}
-
-fn report_declaration(s: &str) -> IResult<&str, &str> {
-    terminated(preceded(preceded(tag("Dear Princes Celestia:"), whitespace0), identifier), punctuation)(s)
-}
-
-fn paragraph(s: &str) -> IResult<&str, Paragraph> {
-    map(tuple((
-        terminated(paragraph_declaration, whitespace0),
-        many0(statement),
-        paragraph_closing,
-    )), |(declaration, statements, closing)| Paragraph {
-        name: declaration,
-        closing_name: closing,
-        statements,
-    })(s)
-}
-
-fn paragraph_declaration(s: &str) -> IResult<&str, &str> {
-    terminated(preceded(preceded(tag("Today I learned"), whitespace0), identifier), punctuation)(s)
-}
-
-fn statement(s: &str) -> IResult<&str, Literal> {
-    terminated(terminated(preceded(preceded(print, whitespace0), literal), punctuation), whitespace0)(s)
-}
-
-fn literal(s: &str) -> IResult<&str, Literal> {
-    alt((string, number))(s)
-}
-
-fn string(s: &str) -> IResult<&str, Literal> {
-    map(delimited(is_a("\""), is_not("\""), is_a("\"")), |s| Literal::String(s))(s)
-}
-
-fn number(s: &str) -> IResult<&str, Literal> {
-    map(preceded(opt(terminated(tag("the number"), whitespace0)), double), |n| Literal::Number(n))(s)
-}
-
-fn paragraph_closing(s: &str) -> IResult<&str, &str> {
-    terminated(preceded(preceded(tag("That's all about"), whitespace0), identifier), punctuation)(s)
-}
-
-fn report_closing(s: &str) -> IResult<&str, &str> {
-    terminated(terminated(preceded(preceded(tag("Your faithful student"), punctuation), take_till1(is_punctuation)), punctuation), whitespace0)(s)
-}
-
-fn line_comment(s: &str) -> IResult<&str, &str> {
-    terminated(preceded(terminated(many1(tag("P.")), tag("S.")), is_not("\n\r")), opt(is_a("\n\r")))(s)
-}
-
-fn multiline_comment(s: &str) -> IResult<&str, &str> {
-    delimited(tag("("), recognize(many0(alt((is_not("()"), multiline_comment)))), tag(")"))(s)
-}
-
-#[test]
-fn parses_does() {
-    assert_eq!(does("does"), Ok(("", "does")));
-    assert_eq!(does("not"), Err(nom::Err::Error(("not", ErrorKind::Tag))));
-}
-
-#[test]
-fn parses_word() {
-    assert_eq!(word("An"), Ok(("", "An")));
-}
-
-#[test]
-fn parses_identifier() {
-    assert_eq!(identifier("An example letter"), Ok(("", "An example letter")));
-    assert_eq!(identifier("An example letter."), Ok((".", "An example letter")));
-    assert_eq!(identifier("An example letter ."), Ok((" .", "An example letter")));
-}
-
-#[test]
-fn parses_report_declaration() {
-    assert_eq!(report_declaration("Dear Princes Celestia: An example letter."), Ok(("", "An example letter")));
-}
-
-#[test]
-fn parses_report_closing() {
-    assert_eq!(report_closing("Your faithful student: Twilight Sparkle."), Ok(("", " Twilight Sparkle")));
-    assert_eq!(report_closing("Your faithful student, Applejack's hat!"), Ok(("", " Applejack's hat")));
-}
-
-#[test]
-fn parses_paragraph_declaration() {
-    assert_eq!(paragraph_declaration("Today I learned how to fly."), Ok(("", "how to fly")));
-    assert_eq!(paragraph_declaration("Today I learned to say hello world:"), Ok(("", "to say hello world")));
-}
-
-#[test]
-fn parses_paragraph_closing() {
-    assert_eq!(paragraph_closing("That's all about how to fly."), Ok(("", "how to fly")));
-    assert_eq!(paragraph_closing("That's all about to say hello world!"), Ok(("", "to say hello world")));
-}
-
-#[test]
-fn parses_paragraph() {
-    assert_eq!(paragraph("Today I learned how to fly.\
-    I said \"Fly!\".\
-    That's all about how to fly."), Ok(("", Paragraph {
-        name: "how to fly",
-        closing_name: "how to fly",
-        statements: vec![Literal::String("Fly!")],
-    })));
-    assert_eq!(paragraph("Today I learned how to fly.\
-    I said \"Fly1!\".\
-    I said the number 5.\
-    That's all about how to fly."), Ok(("", Paragraph {
-        name: "how to fly",
-        closing_name: "how to fly",
-        statements: vec![Literal::String("Fly1!"), Literal::Number(5f64)],
-    })));
-}
-
-#[test]
-fn parses_report() {
-    assert_eq!(report("Dear Princes Celestia: An example letter.\
-        Today I learned how to fly:
-            I said \"Fly!\"!
-        That's all about how to fly!
-    Your faithful student: Twilight Sparkle.
-    P.S. This is ignored"), Ok(("", Report {
-        name: "An example letter",
-        paragraphs: vec![Paragraph {
-            name: "how to fly",
-            closing_name: "how to fly",
-            statements: vec![Literal::String("Fly!")],
-        }],
-        writer: " Twilight Sparkle",
-    })));
-}
-
-#[test]
-fn parses_line_comment() {
-    assert_eq!(line_comment("P.S. Comment"), Ok(("", " Comment")));
-    assert_eq!(line_comment("P.S. Comment\n"), Ok(("", " Comment")));
-    assert_eq!(line_comment("P.P.P.S. Comment\n"), Ok(("", " Comment")));
-    assert_eq!(line_comment("P.P.P.S. Comment\r\n"), Ok(("", " Comment")));
-}
-
-#[test]
-fn parses_multiline_comment() {
-    assert_eq!(multiline_comment("(Comment)"), Ok(("", "Comment")));
-    assert_eq!(multiline_comment("(Nested (Comment))"), Ok(("", "Nested (Comment)")));
-}
-
-#[test]
-fn parses_literal() {
-    assert_eq!(literal("\"string\""), Ok(("", Literal::String("string"))));
-    assert_eq!(literal("12"), Ok(("", Literal::Number(12f64))));
-    assert_eq!(literal("the number -1.6"), Ok(("", Literal::Number(-1.6f64))));
 }
