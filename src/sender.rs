@@ -1,11 +1,11 @@
-use std::borrow::{Borrow, Cow};
-use std::env::args;
-use std::error::Error;
-use std::fmt::Formatter;
-use std::fs::{read_to_string, File};
+
+
+
+
+use std::fs::{File};
 use std::mem;
-use std::path::Path;
-use std::process::exit;
+
+
 use std::str::FromStr;
 
 use cranelift::prelude::settings::{self, Configurable};
@@ -45,7 +45,7 @@ pub fn send_out<'a>(report: &'a Report, name: &str) -> Result<(), ReportError<'a
     Ok(())
 }
 
-pub fn gallop<'a>(report: &'a Report, name: &str) -> Result<(), ReportError<'a>> {
+pub fn gallop<'a>(report: &'a Report, _name: &str) -> Result<(), ReportError<'a>> {
     let builder = SimpleJITBuilder::new(default_libcall_names());
     let module = Module::<SimpleJITBackend>::new(builder);
     let data_context = DataContext::new();
@@ -154,7 +154,7 @@ fn send_statement<'a, B: Backend>(
         .ins()
         .symbol_value(sender.module.target_config().pointer_type(), local_id);
 
-    let call = builder.ins().call(local_callee, &[var]);
+    let _call = builder.ins().call(local_callee, &[var]);
 
     Ok(())
 }

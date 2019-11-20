@@ -1,7 +1,9 @@
-use nom::error::ErrorKind;
+use std::error::Error;
 use std::fmt;
 use std::fmt::Formatter;
-use std::error::Error;
+
+use nom::error::ErrorKind;
+
 use crate::error::ReportError::{ReadError, SendError};
 
 #[derive(Debug)]
@@ -11,7 +13,7 @@ pub enum ReportError<'a> {
 }
 
 impl fmt::Display for ReportError<'_> {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+    fn fmt(&self, _f: &mut Formatter<'_>) -> fmt::Result {
         unimplemented!()
     }
 }

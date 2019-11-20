@@ -1,9 +1,9 @@
-use std::io;
+
 use std::process::Command;
 
 use assert_cmd::cargo::CargoError;
 use assert_cmd::prelude::*;
-use predicates::prelude::*;
+
 
 #[test]
 fn hello_canterlot() -> Result<(), CargoError> {

@@ -2,10 +2,10 @@ use nom::branch::alt;
 use nom::bytes::complete::{is_a, is_not, tag, take_till1, take_while};
 use nom::character::complete::space1;
 use nom::combinator::{complete, map, opt, recognize};
+use nom::IResult;
 use nom::multi::{many0, many1, separated_list};
 use nom::number::complete::double;
 use nom::sequence::{delimited, preceded, terminated, tuple};
-use nom::IResult;
 
 use crate::error::ReportError;
 use crate::pst::{Literal, Paragraph, Report};
