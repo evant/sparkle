@@ -22,7 +22,7 @@ use nom::branch::alt;
 use nom::bytes::complete::{is_a, is_not, tag, take_till, take_till1, take_until, take_while, take_while1};
 use nom::character::complete::{anychar, space1};
 use nom::character::is_space;
-use nom::combinator::{map, map_res, not, opt, peek, recognize};
+use nom::combinator::{complete, map, map_res, not, opt, peek, recognize};
 use nom::error::{ErrorKind, ParseError};
 use nom::multi::{many0, many1, many_till, separated_list};
 use nom::sequence::{delimited, delimitedc, pair, preceded, separated_pair, terminated, terminatedc, tuple};
@@ -273,7 +273,7 @@ fn word(s: &str) -> IResult<&str, &str> {
 }
 
 fn whitespace0(s: &str) -> IResult<&str, &str> {
-    recognize(many0(whitespace))(s)
+    recognize(many0(alt((whitespace, line_comment, multiline_comment))))(s)
 }
 
 fn whitespace(s: &str) -> IResult<&str, &str> {
@@ -289,11 +289,11 @@ fn punctuation(s: &str) -> IResult<&str, &str> {
 }
 
 fn report(s: &str) -> IResult<&str, Report> {
-    map(tuple((
+    map(complete(tuple((
         terminated(report_declaration, whitespace0),
         terminated(many0(paragraph), whitespace0),
         report_closing
-    )), |(declaration, paragraphs, closing)| Report {
+    ))), |(declaration, paragraphs, closing)| Report {
         name: declaration,
         writer: closing,
         paragraphs,
@@ -333,7 +333,15 @@ fn paragraph_closing(s: &str) -> IResult<&str, &str> {
 }
 
 fn report_closing(s: &str) -> IResult<&str, &str> {
-    terminated(preceded(preceded(tag("Your faithful student"), punctuation), take_till1(is_punctuation)), punctuation)(s)
+    terminated(terminated(preceded(preceded(tag("Your faithful student"), punctuation), take_till1(is_punctuation)), punctuation), whitespace0)(s)
+}
+
+fn line_comment(s: &str) -> IResult<&str, &str> {
+    terminated(preceded(terminated(many1(tag("P.")), tag("S.")), is_not("\n\r")), opt(is_a("\n\r")))(s)
+}
+
+fn multiline_comment(s: &str) -> IResult<&str, &str> {
+    delimited(tag("("), recognize(many0(alt((is_not("()"), multiline_comment)))), tag(")"))(s)
 }
 
 #[test]
@@ -402,7 +410,8 @@ fn parses_report() {
         Today I learned how to fly:
             I said \"Fly!\"!
         That's all about how to fly!
-    Your faithful student: Twilight Sparkle."), Ok(("", Report {
+    Your faithful student: Twilight Sparkle.
+    P.S. This is ignored"), Ok(("", Report {
         name: "An example letter",
         paragraphs: vec![Paragraph {
             name: "how to fly",
@@ -411,4 +420,18 @@ fn parses_report() {
         }],
         writer: " Twilight Sparkle",
     })));
+}
+
+#[test]
+fn parses_line_comment() {
+    assert_eq!(line_comment("P.S. Comment"), Ok(("", " Comment")));
+    assert_eq!(line_comment("P.S. Comment\n"), Ok(("", " Comment")));
+    assert_eq!(line_comment("P.P.P.S. Comment\n"), Ok(("", " Comment")));
+    assert_eq!(line_comment("P.P.P.S. Comment\r\n"), Ok(("", " Comment")));
+}
+
+#[test]
+fn parses_multiline_comment() {
+    assert_eq!(multiline_comment("(Comment)"), Ok(("", "Comment")));
+    assert_eq!(multiline_comment("(Nested (Comment))"), Ok(("", "Nested (Comment)")));
 }
