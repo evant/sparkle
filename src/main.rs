@@ -1,5 +1,5 @@
 use std::{fmt, io, mem};
-use std::borrow::Borrow;
+use std::borrow::{Borrow, Cow};
 use std::env::{args, temp_dir};
 use std::error::Error;
 use std::fmt::Formatter;
@@ -25,6 +25,7 @@ use nom::character::is_space;
 use nom::combinator::{complete, map, map_res, not, opt, peek, recognize};
 use nom::error::{ErrorKind, ParseError};
 use nom::multi::{many0, many1, many_till, separated_list};
+use nom::number::complete::{double, float, recognize_float};
 use nom::sequence::{delimited, delimitedc, pair, preceded, separated_pair, terminated, terminatedc, tuple};
 use target_lexicon::Triple;
 
@@ -192,19 +193,21 @@ fn send<'a, B: Backend>(report: &'a Report, name: &str, sender: &mut Sender<B>) 
 
 fn send_paragraph<'a, B: Backend>(paragraph: &'a Paragraph, sender: &mut Sender<B>, builder: &mut FunctionBuilder) -> Result<(), ReportError<'a>> {
     for statement in paragraph.statements.iter() {
-        send_statement(*statement, sender, builder)?;
+        send_statement(statement, sender, builder)?;
     }
 
     Ok(())
 }
 
-fn send_statement<'a, B: Backend>(statement: &'a str, sender: &mut Sender<B>, builder: &mut FunctionBuilder) -> Result<(), ReportError<'a>> {
+fn send_statement<'a, B: Backend>(statement: &Literal<'a>, sender: &mut Sender<B>, builder: &mut FunctionBuilder) -> Result<(), ReportError<'a>> {
+    let display = statement.to_cow_string();
+
     // We need to append a null byte at the end for libc.
-    let mut s: Vec<_> = statement.bytes().into_iter().collect();
+    let mut s: Vec<_> = display.bytes().into_iter().collect();
     s.push('\0' as u8);
 
     sender.data_context.define(s.into_boxed_slice());
-    let id = sender.module.declare_data(statement, Linkage::Export, false, Option::None)?;
+    let id = sender.module.declare_data(&display, Linkage::Export, false, Option::None)?;
     sender.module.define_data(id, &sender.data_context)?;
     sender.data_context.clear();
     sender.module.finalize_definitions();
@@ -214,7 +217,7 @@ fn send_statement<'a, B: Backend>(statement: &'a str, sender: &mut Sender<B>, bu
     let callee = sender.module.declare_function("puts", Linkage::Import, &sig)?;
     let local_callee = sender.module.declare_func_in_func(callee, builder.func);
 
-    let sym = sender.module.declare_data(statement, Linkage::Export, false, Option::None)?;
+    let sym = sender.module.declare_data(&display, Linkage::Export, false, Option::None)?;
     let local_id = sender.module.declare_data_in_func(sym, builder.func);
     let var = builder.ins().symbol_value(sender.module.target_config().pointer_type(), local_id);
 
@@ -228,18 +231,33 @@ struct Sender<B: Backend> {
     data_context: DataContext,
 }
 
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Debug, PartialEq)]
 struct Paragraph<'a> {
     name: &'a str,
     closing_name: &'a str,
-    statements: Vec<&'a str>,
+    statements: Vec<Literal<'a>>,
 }
 
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Debug, PartialEq)]
 struct Report<'a> {
     name: &'a str,
     paragraphs: Vec<Paragraph<'a>>,
     writer: &'a str,
+}
+
+#[derive(Debug, PartialEq)]
+enum Literal<'a> {
+    String(&'a str),
+    Number(f64),
+}
+
+impl<'a> Literal<'a> {
+    fn to_cow_string(&self) -> Cow<'a, str> {
+        match self {
+            Literal::String(s) => (*s).into(),
+            Literal::Number(n) => n.to_string().into(),
+        }
+    }
 }
 
 fn is_keyword(s: &str) -> bool {
@@ -320,12 +338,20 @@ fn paragraph_declaration(s: &str) -> IResult<&str, &str> {
     terminated(preceded(preceded(tag("Today I learned"), whitespace0), identifier), punctuation)(s)
 }
 
-fn statement(s: &str) -> IResult<&str, &str> {
+fn statement(s: &str) -> IResult<&str, Literal> {
     terminated(terminated(preceded(preceded(print, whitespace0), literal), punctuation), whitespace0)(s)
 }
 
-fn literal(s: &str) -> IResult<&str, &str> {
-    delimited(is_a("\""), is_not("\""), is_a("\""))(s)
+fn literal(s: &str) -> IResult<&str, Literal> {
+    alt((string, number))(s)
+}
+
+fn string(s: &str) -> IResult<&str, Literal> {
+    map(delimited(is_a("\""), is_not("\""), is_a("\"")), |s| Literal::String(s))(s)
+}
+
+fn number(s: &str) -> IResult<&str, Literal> {
+    map(preceded(opt(terminated(tag("the number"), whitespace0)), double), |n| Literal::Number(n))(s)
 }
 
 fn paragraph_closing(s: &str) -> IResult<&str, &str> {
@@ -392,15 +418,15 @@ fn parses_paragraph() {
     That's all about how to fly."), Ok(("", Paragraph {
         name: "how to fly",
         closing_name: "how to fly",
-        statements: vec!["Fly!"],
+        statements: vec![Literal::String("Fly!")],
     })));
     assert_eq!(paragraph("Today I learned how to fly.\
     I said \"Fly1!\".\
-    I said \"Fly2!\".\
+    I said the number 5.\
     That's all about how to fly."), Ok(("", Paragraph {
         name: "how to fly",
         closing_name: "how to fly",
-        statements: vec!["Fly1!", "Fly2!"],
+        statements: vec![Literal::String("Fly1!"), Literal::Number(5f64)],
     })));
 }
 
@@ -416,7 +442,7 @@ fn parses_report() {
         paragraphs: vec![Paragraph {
             name: "how to fly",
             closing_name: "how to fly",
-            statements: vec!["Fly!"],
+            statements: vec![Literal::String("Fly!")],
         }],
         writer: " Twilight Sparkle",
     })));
@@ -434,4 +460,11 @@ fn parses_line_comment() {
 fn parses_multiline_comment() {
     assert_eq!(multiline_comment("(Comment)"), Ok(("", "Comment")));
     assert_eq!(multiline_comment("(Nested (Comment))"), Ok(("", "Nested (Comment)")));
+}
+
+#[test]
+fn parses_literal() {
+    assert_eq!(literal("\"string\""), Ok(("", Literal::String("string"))));
+    assert_eq!(literal("12"), Ok(("", Literal::Number(12f64))));
+    assert_eq!(literal("the number -1.6"), Ok(("", Literal::Number(-1.6f64))));
 }

@@ -36,3 +36,18 @@ fn say_hello_to_everypony() -> Result<(), CargoError> {
 
     Ok(())
 }
+
+#[test]
+fn math() -> Result<(), CargoError> {
+    let mut cmd = Command::cargo_bin("fimpp")?;
+
+    cmd.arg("gallop")
+        .arg("examples/math.fpp");
+
+    cmd.assert()
+        .success()
+        .stdout("7\n\
+        10\n");
+
+    Ok(())
+}
