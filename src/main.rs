@@ -1,9 +1,11 @@
+use std::env::args;
 use std::error::Error;
 use std::fmt;
 use std::fmt::Formatter;
 use std::fs::{File, read_to_string};
 use std::io::Write;
 use std::iter::Product;
+use std::path::Path;
 use std::str::FromStr;
 
 use cranelift::prelude::*;
@@ -24,7 +26,6 @@ use nom::sequence::{delimited, delimitedc, pair, preceded, separated_pair, termi
 use target_lexicon::Triple;
 
 use crate::ReportError::{ReadError, SendError};
-use std::path::Path;
 
 #[derive(Debug)]
 enum ReportError<'a> {
@@ -65,10 +66,23 @@ impl From<cranelift_module::ModuleError> for ReportError<'_> {
 }
 
 fn main() {
-    let report = read_to_string("./src/hello_canterlot.fpp").expect("error opening report");
-    let product = send(read(&report).unwrap()).unwrap();
-    let file = File::create(product.name().to_owned() + ".o").expect("error opening file");
-    product.write(file).expect("error writing to file");
+    let arg = args().nth(1);
+    match arg {
+        Some(path) => {
+            let p = Path::new(&path);
+            if p.is_dir() {
+                panic!("expected file but got dir");
+            }
+            let report = read_to_string(p).expect("error opening report");
+            let name = p.file_stem().unwrap().to_str().unwrap().to_owned();
+            let product = send(&read(&report).unwrap(), &name).unwrap();
+            let file = File::create(name + ".o").expect("error opening file");
+            product.write(file).expect("error writing to file");
+        }
+        None => {
+            println!("{}", "usage: fimpp report.fpp")
+        }
+    }
 }
 
 fn read(report_text: &str) -> Result<Report, ReportError> {
@@ -76,14 +90,14 @@ fn read(report_text: &str) -> Result<Report, ReportError> {
     return Ok(ast);
 }
 
-fn send(report: Report) -> Result<FaerieProduct, ReportError> {
+fn send<'a>(report: &'a Report, name: &str) -> Result<FaerieProduct, ReportError<'a>> {
     let mut flag_builder = settings::builder();
     flag_builder.enable("is_pic").unwrap();
     let isa_builder = isa::lookup(Triple::from_str("x86_64-unknown-unknown-elf")?)?;
     let isa = isa_builder.finish(settings::Flags::new(flag_builder));
     let builder = FaerieBuilder::new(
         isa,
-        "hello_canterlot".to_owned(),
+        name.to_owned(),
         FaerieTrapCollection::Disabled,
         default_libcall_names(),
     ).unwrap();

@@ -1,5 +1,5 @@
 #!/usr/bin/bash
 
-cargo run
-cc hello_canterlot.o
-./a.out
+cargo run -- src/hello_canterlot.fpp
+cc hello_canterlot.o -o hello_canterlot
+./hello_canterlot
