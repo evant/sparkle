@@ -1,11 +1,13 @@
-use std::env::args;
+use std::{fmt, io, mem};
+use std::borrow::Borrow;
+use std::env::{args, temp_dir};
 use std::error::Error;
-use std::fmt;
 use std::fmt::Formatter;
 use std::fs::{File, read_to_string};
-use std::io::Write;
+use std::io::{Read, Write};
 use std::iter::Product;
 use std::path::Path;
+use std::process::exit;
 use std::str::FromStr;
 
 use cranelift::prelude::*;
@@ -13,18 +15,20 @@ use cranelift::prelude::{AbiParam, FunctionBuilder, FunctionBuilderContext, isa,
 use cranelift::prelude::isa::LookupError;
 use cranelift::prelude::settings::{self, Configurable};
 use cranelift_faerie::{FaerieBackend, FaerieBuilder, FaerieProduct, FaerieTrapCollection};
-use cranelift_module::{DataContext, default_libcall_names, Linkage, Module, ModuleError};
+use cranelift_module::{Backend, DataContext, default_libcall_names, FuncId, Linkage, Module, ModuleError};
+use cranelift_simplejit::{SimpleJITBackend, SimpleJITBuilder};
 use nom::{Compare, InputLength, InputTake, IResult};
 use nom::branch::alt;
 use nom::bytes::complete::{is_a, is_not, tag, take_till, take_till1, take_until, take_while, take_while1};
 use nom::character::complete::{anychar, space1};
 use nom::character::is_space;
-use nom::combinator::{map, map_res, not, peek, recognize};
+use nom::combinator::{map, map_res, not, opt, peek, recognize};
 use nom::error::{ErrorKind, ParseError};
 use nom::multi::{many0, many1, many_till, separated_list};
 use nom::sequence::{delimited, delimitedc, pair, preceded, separated_pair, terminated, terminatedc, tuple};
 use target_lexicon::Triple;
 
+use crate::Options::Gallop;
 use crate::ReportError::{ReadError, SendError};
 
 #[derive(Debug)]
@@ -65,32 +69,48 @@ impl From<cranelift_module::ModuleError> for ReportError<'_> {
     }
 }
 
+enum Options {
+    Send,
+    Gallop,
+}
+
 fn main() {
-    let arg = args().nth(1);
-    match arg {
-        Some(path) => {
-            let p = Path::new(&path);
-            if p.is_dir() {
-                panic!("expected file but got dir");
-            }
-            let report = read_to_string(p).expect("error opening report");
-            let name = p.file_stem().unwrap().to_str().unwrap().to_owned();
-            let product = send(&read(&report).unwrap(), &name).unwrap();
-            let file = File::create(name + ".o").expect("error opening file");
-            product.write(file).expect("error writing to file");
+    let args: Vec<_> = args().skip(1).collect();
+    if args.len() < 2 {
+        println!("{}", "usage: fimpp [send|gallop] report.fpp");
+        return;
+    }
+    let option = args[0].borrow();
+    let option = match option {
+        "send" => Options::Send,
+        "gallop" => Options::Gallop,
+        o => {
+            eprintln!("unrecognized option: {}", o);
+            exit(1);
         }
-        None => {
-            println!("{}", "usage: fimpp report.fpp")
-        }
+    };
+    let path = &args[1];
+    let path = Path::new(&path);
+    if path.is_dir() {
+        panic!("expected file but got dir");
+    }
+    let report = read_to_string(path).expect("error opening report");
+    let name = path.file_stem().unwrap().to_str().unwrap();
+    let ast = read(&report).unwrap();
+
+    match option {
+        Options::Send => send_out(&ast, name).unwrap(),
+        Options::Gallop => send_here(&ast, name).unwrap(),
     }
 }
+
 
 fn read(report_text: &str) -> Result<Report, ReportError> {
     let (_, ast) = report(report_text)?;
     return Ok(ast);
 }
 
-fn send<'a>(report: &'a Report, name: &str) -> Result<FaerieProduct, ReportError<'a>> {
+fn send_out<'a>(report: &'a Report, name: &str) -> Result<(), ReportError<'a>> {
     let mut flag_builder = settings::builder();
     flag_builder.enable("is_pic").unwrap();
     let isa_builder = isa::lookup(Triple::from_str("x86_64-unknown-unknown-elf")?)?;
@@ -102,11 +122,40 @@ fn send<'a>(report: &'a Report, name: &str) -> Result<FaerieProduct, ReportError
         default_libcall_names(),
     ).unwrap();
     let mut module = Module::<FaerieBackend>::new(builder);
-    let mut builder_context = FunctionBuilderContext::new();
-    let mut ctx = module.make_context();
     let mut data_context = DataContext::new();
+    let mut sender = Sender {
+        module,
+        data_context,
+    };
+    send(report, name, &mut sender)?;
+    let product = sender.module.finish();
+    let file = File::create(name.to_owned() + ".o").expect("error opening file");
+    product.write(file).expect("error writing to file");
 
-    let int = module.target_config().pointer_type();
+    Ok(())
+}
+
+fn send_here<'a>(report: &'a Report, name: &str) -> Result<(), ReportError<'a>> {
+    let builder = SimpleJITBuilder::new(default_libcall_names());
+    let mut module = Module::<SimpleJITBackend>::new(builder);
+    let mut data_context = DataContext::new();
+    let mut sender = Sender {
+        module,
+        data_context,
+    };
+    let id = send(report, name, &mut sender)?;
+    let code = sender.module.get_finalized_function(id);
+    let code = unsafe { mem::transmute::<_, fn() -> (isize)>(code) };
+
+    code();
+
+    Ok(())
+}
+
+fn send<'a, B: Backend>(report: &'a Report, name: &str, sender: &mut Sender<B>) -> Result<FuncId, ReportError<'a>> {
+    let mut ctx = sender.module.make_context();
+    let mut builder_context = FunctionBuilderContext::new();
+    let int = sender.module.target_config().pointer_type();
     ctx.func.signature.returns.push(AbiParam::new(int));
 
     let mut builder = FunctionBuilder::new(&mut ctx.func, &mut builder_context);
@@ -115,7 +164,7 @@ fn send<'a>(report: &'a Report, name: &str) -> Result<FaerieProduct, ReportError
     builder.switch_to_block(entry_ebb);
     builder.seal_block(entry_ebb);
 
-    send_paragraph(&report.paragraphs[0], &mut module, &mut data_context, &mut builder);
+    send_paragraph(&report.paragraphs[0], sender, &mut builder);
 
     let zero = builder.ins().iconst(int, 0);
     let var = Variable::new(0);
@@ -124,46 +173,51 @@ fn send<'a>(report: &'a Report, name: &str) -> Result<FaerieProduct, ReportError
     let return_value = builder.use_var(var);
     builder.ins().return_(&[return_value]);
 
-    let id = module.declare_function("main", Linkage::Export, &ctx.func.signature)?;
-    module.define_function(id, &mut ctx)?;
+    let id = sender.module.declare_function("main", Linkage::Export, &ctx.func.signature)?;
+    sender.module.define_function(id, &mut ctx)?;
 
-    module.clear_context(&mut ctx);
-    module.finalize_definitions();
+    sender.module.clear_context(&mut ctx);
+    sender.module.finalize_definitions();
 
-    Ok(module.finish())
+    Ok(id)
 }
 
-fn send_paragraph<'a>(paragraph: &'a Paragraph, module: &mut Module<FaerieBackend>, data_context: &mut DataContext, builder: &mut FunctionBuilder) -> Result<(), ReportError<'a>> {
+fn send_paragraph<'a, B: Backend>(paragraph: &'a Paragraph, sender: &mut Sender<B>, builder: &mut FunctionBuilder) -> Result<(), ReportError<'a>> {
     for statement in paragraph.statements.iter() {
-        send_statement(*statement, module, data_context, builder)?;
+        send_statement(*statement, sender, builder)?;
     }
 
     Ok(())
 }
 
-fn send_statement<'a>(statement: &'a str, module: &mut Module<FaerieBackend>, data_context: &mut DataContext, builder: &mut FunctionBuilder) -> Result<(), ReportError<'a>> {
+fn send_statement<'a, B: Backend>(statement: &'a str, sender: &mut Sender<B>, builder: &mut FunctionBuilder) -> Result<(), ReportError<'a>> {
     // We need to append a null byte at the end for libc.
     let mut s: Vec<_> = statement.bytes().into_iter().collect();
     s.push('\0' as u8);
 
-    data_context.define(s.into_boxed_slice());
-    let id = module.declare_data("string", Linkage::Export, false, Option::None)?;
-    module.define_data(id, data_context)?;
-    data_context.clear();
-    module.finalize_definitions();
+    sender.data_context.define(s.into_boxed_slice());
+    let id = sender.module.declare_data("string", Linkage::Export, false, Option::None)?;
+    sender.module.define_data(id, &sender.data_context)?;
+    sender.data_context.clear();
+    sender.module.finalize_definitions();
 
-    let mut sig = module.make_signature();
-    sig.params.push(AbiParam::new(module.target_config().pointer_type()));
-    let callee = module.declare_function("puts", Linkage::Import, &sig)?;
-    let local_callee = module.declare_func_in_func(callee, builder.func);
+    let mut sig = sender.module.make_signature();
+    sig.params.push(AbiParam::new(sender.module.target_config().pointer_type()));
+    let callee = sender.module.declare_function("puts", Linkage::Import, &sig)?;
+    let local_callee = sender.module.declare_func_in_func(callee, builder.func);
 
-    let sym = module.declare_data("string", Linkage::Export, false, Option::None)?;
-    let local_id = module.declare_data_in_func(sym, builder.func);
-    let var = builder.ins().symbol_value(module.target_config().pointer_type(), local_id);
+    let sym = sender.module.declare_data("string", Linkage::Export, false, Option::None)?;
+    let local_id = sender.module.declare_data_in_func(sym, builder.func);
+    let var = builder.ins().symbol_value(sender.module.target_config().pointer_type(), local_id);
 
     let call = builder.ins().call(local_callee, &[var]);
 
     Ok(())
+}
+
+struct Sender<B: Backend> {
+    module: Module<B>,
+    data_context: DataContext,
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -341,4 +395,30 @@ fn parses_report() {
         }],
         writer: " Twilight Sparkle",
     })));
+}
+
+
+#[test]
+fn sends_hello_canterlot() {
+    let out = capture_stdout(|| {
+        let report = read("Dear Princes Celestia: An example letter.\
+        Today I learned how to fly:
+            I said \"Fly!\"!
+        That's all about how to fly!
+    Your faithful student: Twilight Sparkle.").unwrap();
+        send_here(&report, "test");
+    }).unwrap();
+
+    assert_eq!(out, "Fly!");
+}
+
+#[cfg(test)]
+fn capture_stdout(f: impl FnOnce() -> ()) -> io::Result<String> {
+    use gag::BufferRedirect;
+
+    let mut buf = BufferRedirect::stdout()?;
+    f();
+    let mut out = String::new();
+    buf.read_to_string(&mut out)?;
+    Ok(out)
 }
