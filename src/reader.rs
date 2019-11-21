@@ -358,24 +358,6 @@ fn parses_report() {
             }
         ))
     );
-    assert_eq!(
-        report(
-            "Dear Princess Celestia: An example letter.
-                Your faithful student: Twilight Sparkle."
-        ),
-        Ok((
-            "",
-            Report {
-                name: "An example letter",
-                paragraphs: vec![Paragraph {
-                    name: "how to fly",
-                    closing_name: "how to fly",
-                    statements: vec![Expr::Val(Value::Lit(Literal::String("Fly!")))],
-                }],
-                writer: " Twilight Sparkle",
-            }
-        ))
-    );
 }
 
 #[test]
