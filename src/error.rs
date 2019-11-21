@@ -43,3 +43,9 @@ impl From<cranelift_module::ModuleError> for ReportError<'_> {
         SendError(e.to_string())
     }
 }
+
+impl From<fmt::Error> for ReportError<'_> {
+    fn from(e: fmt::Error) -> Self {
+        SendError(e.to_string())
+    }
+}

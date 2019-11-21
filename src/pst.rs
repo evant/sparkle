@@ -4,7 +4,7 @@ use std::borrow::Cow;
 pub struct Paragraph<'a> {
     pub name: &'a str,
     pub closing_name: &'a str,
-    pub statements: Vec<Literal<'a>>,
+    pub statements: Vec<Expr<'a>>,
 }
 
 #[derive(Debug, PartialEq)]
@@ -18,6 +18,12 @@ pub struct Report<'a> {
 pub enum Literal<'a> {
     String(&'a str),
     Number(f64),
+}
+
+#[derive(Debug, PartialEq)]
+pub enum Expr<'a> {
+    Add(Box<Expr<'a>>, Box<Expr<'a>>),
+    Lit(Literal<'a>),
 }
 
 impl<'a> Literal<'a> {

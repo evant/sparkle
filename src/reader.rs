@@ -2,13 +2,13 @@ use nom::branch::alt;
 use nom::bytes::complete::{is_a, is_not, tag, take_till1, take_while};
 use nom::character::complete::space1;
 use nom::combinator::{complete, map, opt, recognize};
-use nom::IResult;
 use nom::multi::{many0, many1, separated_list};
 use nom::number::complete::double;
 use nom::sequence::{delimited, preceded, terminated, tuple};
+use nom::IResult;
 
 use crate::error::ReportError;
-use crate::pst::{Literal, Paragraph, Report};
+use crate::pst::{Expr, Literal, Paragraph, Report};
 
 pub fn read(report_text: &str) -> Result<Report, ReportError> {
     let (_, ast) = report(report_text)?;
@@ -113,11 +113,15 @@ fn paragraph_declaration(s: &str) -> IResult<&str, &str> {
     )(s)
 }
 
-fn statement(s: &str) -> IResult<&str, Literal> {
+fn statement(s: &str) -> IResult<&str, Expr> {
     terminated(
-        terminated(preceded(preceded(print, whitespace0), literal), punctuation),
+        terminated(preceded(preceded(print, whitespace0), expr), punctuation),
         whitespace0,
     )(s)
+}
+
+fn expr(s: &str) -> IResult<&str, Expr> {
+    map(literal, |l| Expr::Lit(l))(s)
 }
 
 fn literal(s: &str) -> IResult<&str, Literal> {
@@ -258,7 +262,7 @@ fn parses_paragraph() {
             Paragraph {
                 name: "how to fly",
                 closing_name: "how to fly",
-                statements: vec![Literal::String("Fly!")],
+                statements: vec![Expr::Lit(Literal::String("Fly!"))],
             }
         ))
     );
@@ -274,7 +278,10 @@ fn parses_paragraph() {
             Paragraph {
                 name: "how to fly",
                 closing_name: "how to fly",
-                statements: vec![Literal::String("Fly1!"), Literal::Number(5f64)],
+                statements: vec![
+                    Expr::Lit(Literal::String("Fly1!")),
+                    Expr::Lit(Literal::Number(5f64))
+                ],
             }
         ))
     );
@@ -298,7 +305,7 @@ fn parses_report() {
                 paragraphs: vec![Paragraph {
                     name: "how to fly",
                     closing_name: "how to fly",
-                    statements: vec![Literal::String("Fly!")],
+                    statements: vec![Expr::Lit(Literal::String("Fly!"))],
                 }],
                 writer: " Twilight Sparkle",
             }
