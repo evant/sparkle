@@ -12,9 +12,10 @@ use cranelift_simplejit::{SimpleJITBackend, SimpleJITBuilder};
 use target_lexicon::Triple;
 
 use crate::error::ReportError;
+use crate::pst;
 use crate::pst::{Expr, Literal, Paragraph, Report};
 
-pub fn send_out<'a>(report: &'a Report, name: &str) -> Result<(), ReportError<'a>> {
+pub fn send_out<'a>(report: &'a Report, name: &str) -> Result<(), ReportError> {
     let mut sender = faerie_sender(name)?;
     let mut context = sender.module.make_context();
     send(report, &mut sender, &mut context)?;
@@ -26,7 +27,7 @@ pub fn send_out<'a>(report: &'a Report, name: &str) -> Result<(), ReportError<'a
     Ok(())
 }
 
-pub fn gallop<'a>(report: &'a Report, _name: &str) -> Result<(), ReportError<'a>> {
+pub fn gallop<'a>(report: &'a Report, _name: &str) -> Result<(), ReportError> {
     let mut sender = simple_jit_sender();
     let mut context = sender.module.make_context();
     let id = send(report, &mut sender, &mut context)?;
@@ -39,7 +40,7 @@ pub fn gallop<'a>(report: &'a Report, _name: &str) -> Result<(), ReportError<'a>
     Ok(())
 }
 
-pub fn proofread<'a>(report: &'a Report<'a>) -> Result<(), ReportError<'a>> {
+pub fn proofread<'a>(report: &'a Report<'a>) -> Result<(), ReportError> {
     let mut sender = simple_jit_sender();
     let mut context = sender.module.make_context();
 
@@ -58,7 +59,7 @@ pub fn proofread<'a>(report: &'a Report<'a>) -> Result<(), ReportError<'a>> {
     Ok(())
 }
 
-fn faerie_sender(name: &str) -> Result<Sender<FaerieBackend>, ReportError<'static>> {
+fn faerie_sender(name: &str) -> Result<Sender<FaerieBackend>, ReportError> {
     let mut flag_builder = settings::builder();
     flag_builder.enable("is_pic").unwrap();
     let isa_builder = isa::lookup(Triple::from_str("x86_64-unknown-unknown-elf")?)?;
@@ -86,7 +87,7 @@ fn send<'a, B: Backend>(
     report: &'a Report,
     sender: &mut Sender<B>,
     context: &mut Context,
-) -> Result<FuncId, ReportError<'a>> {
+) -> Result<FuncId, ReportError> {
     let mut builder_context = FunctionBuilderContext::new();
     let int = sender.module.target_config().pointer_type();
     context.func.signature.returns.push(AbiParam::new(int));
@@ -124,7 +125,7 @@ fn send_paragraph<'a, B: Backend>(
     paragraph: &'a Paragraph,
     sender: &mut Sender<B>,
     builder: &mut FunctionBuilder,
-) -> Result<(), ReportError<'a>> {
+) -> Result<(), ReportError> {
     for statement in paragraph.statements.iter() {
         send_statement(statement, sender, builder)?;
     }
@@ -136,7 +137,7 @@ fn send_statement<'a, B: Backend>(
     statement: &Expr<'a>,
     sender: &mut Sender<B>,
     builder: &mut FunctionBuilder,
-) -> Result<(), ReportError<'a>> {
+) -> Result<(), ReportError> {
     let (type_, value) = send_expression(statement, sender, builder)?;
 
     let (format, param_type) = match type_ {
@@ -170,10 +171,37 @@ fn send_expression<'a, B: Backend>(
     expr: &Expr<'a>,
     sender: &mut Sender<B>,
     builder: &mut FunctionBuilder,
-) -> Result<(crate::types::Type, Value), ReportError<'a>> {
+) -> Result<(crate::types::Type, Value), ReportError> {
     let result = match expr {
-        Expr::Add(left, right) => unreachable!(),
-        Expr::Lit(lit) => match lit {
+        Expr::Add(left, right) => {
+            let (left_type, left_value) = send_value(left, sender, builder)?;
+            let (right_type, right_value) = send_value(right, sender, builder)?;
+
+            if !left_type.is_number() || !right_type.is_number() {
+                //TODO: more descriptive error
+                return Err(ReportError::TypeError(
+                    "expected number but got string".to_owned(),
+                ));
+            }
+
+            (
+                crate::types::Type::Number,
+                builder.ins().fadd(left_value, right_value),
+            )
+        }
+        Expr::Val(val) => send_value(val, sender, builder)?,
+    };
+
+    Ok(result)
+}
+
+fn send_value<'a, B: Backend>(
+    value: &pst::Value<'a>,
+    sender: &mut Sender<B>,
+    builder: &mut FunctionBuilder,
+) -> Result<(crate::types::Type, Value), ReportError> {
+    let result = match value {
+        pst::Value::Lit(lit) => match lit {
             Literal::String(string) => {
                 create_constant_string(string, sender)?;
                 (
@@ -191,7 +219,7 @@ fn send_expression<'a, B: Backend>(
 fn create_constant_string<B: Backend>(
     string: &str,
     sender: &mut Sender<B>,
-) -> Result<(), ReportError<'static>> {
+) -> Result<(), ReportError> {
     // We need to append a null byte at the end for libc.
     let mut s: Vec<_> = string.bytes().collect();
     s.push(b'\0');
@@ -210,7 +238,7 @@ fn reference_constant_string<B: Backend>(
     string: &str,
     sender: &mut Sender<B>,
     builder: &mut FunctionBuilder,
-) -> Result<Value, ReportError<'static>> {
+) -> Result<Value, ReportError> {
     let sym = sender
         .module
         .declare_data(string, Linkage::Export, false, Option::None)?;

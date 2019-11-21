@@ -1,50 +1,58 @@
 use std::error::Error;
 use std::fmt;
-use std::fmt::Formatter;
+use std::fmt::{Debug, Formatter, Result};
 
-use nom::error::ErrorKind;
+use nom::error::{ErrorKind, VerboseError};
 
-use crate::error::ReportError::{ReadError, SendError};
+use crate::error::ReportError::{ReadError, SendError, TypeError};
 
-#[derive(Debug)]
-pub enum ReportError<'a> {
-    ReadError(nom::Err<(&'a str, ErrorKind)>),
+pub enum ReportError {
+    ReadError(String),
     SendError(String),
+    TypeError(String),
 }
 
-impl fmt::Display for ReportError<'_> {
-    fn fmt(&self, _f: &mut Formatter<'_>) -> fmt::Result {
-        unimplemented!()
+impl fmt::Display for ReportError {
+    fn fmt(&self, f: &mut Formatter) -> Result {
+        match self {
+            ReadError(e) => write!(f, "{}", e),
+            SendError(e) => write!(f, "{}", e),
+            TypeError(e) => write!(f, "{}", e),
+        }
     }
 }
 
-impl Error for ReportError<'_> {}
-
-impl<'a> From<nom::Err<(&'a str, ErrorKind)>> for ReportError<'a> {
-    fn from(e: nom::Err<(&'a str, ErrorKind)>) -> Self {
-        ReadError(e)
+impl fmt::Debug for ReportError {
+    fn fmt(&self, f: &mut Formatter) -> Result {
+        match self {
+            ReadError(e) => write!(f, "{}", e),
+            SendError(e) => write!(f, "{}", e),
+            TypeError(e) => write!(f, "{}", e),
+        }
     }
 }
 
-impl From<target_lexicon::ParseError> for ReportError<'_> {
+impl Error for ReportError {}
+
+impl From<target_lexicon::ParseError> for ReportError {
     fn from(e: target_lexicon::ParseError) -> Self {
         SendError(e.to_string())
     }
 }
 
-impl From<cranelift::prelude::isa::LookupError> for ReportError<'_> {
+impl From<cranelift::prelude::isa::LookupError> for ReportError {
     fn from(e: cranelift::prelude::isa::LookupError) -> Self {
         SendError(e.to_string())
     }
 }
 
-impl From<cranelift_module::ModuleError> for ReportError<'_> {
+impl From<cranelift_module::ModuleError> for ReportError {
     fn from(e: cranelift_module::ModuleError) -> Self {
         SendError(e.to_string())
     }
 }
 
-impl From<fmt::Error> for ReportError<'_> {
+impl From<fmt::Error> for ReportError {
     fn from(e: fmt::Error) -> Self {
         SendError(e.to_string())
     }

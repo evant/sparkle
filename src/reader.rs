@@ -2,16 +2,25 @@ use nom::branch::alt;
 use nom::bytes::complete::{is_a, is_not, tag, take_till1, take_while};
 use nom::character::complete::space1;
 use nom::combinator::{complete, map, opt, recognize};
+use nom::error::{convert_error, VerboseError};
 use nom::multi::{many0, many1, separated_list};
 use nom::number::complete::double;
-use nom::sequence::{delimited, preceded, terminated, tuple};
+use nom::sequence::{delimited, preceded, separated_pair, terminated, tuple};
 use nom::IResult;
 
 use crate::error::ReportError;
-use crate::pst::{Expr, Literal, Paragraph, Report};
+use crate::pst::{Expr, Literal, Paragraph, Report, Value};
+
+type ReadResult<'a, O> = IResult<&'a str, O, VerboseError<&'a str>>;
 
 pub fn read(report_text: &str) -> Result<Report, ReportError> {
-    let (_, ast) = report(report_text)?;
+    let ast = match complete(report)(report_text) {
+        Ok((_, ast)) => ast,
+        Err(nom::Err::Error(e)) | Err(nom::Err::Failure(e)) => {
+            return Err(ReportError::ReadError(convert_error(report_text, e)));
+        }
+        _ => unreachable!(),
+    };
     Ok(ast)
 }
 
@@ -29,11 +38,11 @@ fn is_punctuation(s: char) -> bool {
     }
 }
 
-fn does(s: &str) -> IResult<&str, &str> {
+fn does(s: &str) -> ReadResult<&str> {
     alt((tag("does"), tag("do"), tag("did")))(s)
 }
 
-fn print(s: &str) -> IResult<&str, &str> {
+fn print(s: &str) -> ReadResult<&str> {
     alt((
         tag("I remembered"),
         tag("I said"),
@@ -42,37 +51,37 @@ fn print(s: &str) -> IResult<&str, &str> {
     ))(s)
 }
 
-fn identifier(s: &str) -> IResult<&str, &str> {
+fn identifier(s: &str) -> ReadResult<&str> {
     recognize(separated_list(space1, word))(s)
 }
 
-fn word(s: &str) -> IResult<&str, &str> {
+fn word(s: &str) -> ReadResult<&str> {
     recognize(many1(not_space_or_punctuation))(s)
 }
 
-fn whitespace0(s: &str) -> IResult<&str, &str> {
+fn whitespace0(s: &str) -> ReadResult<&str> {
     recognize(many0(alt((whitespace, line_comment, multiline_comment))))(s)
 }
 
-fn whitespace(s: &str) -> IResult<&str, &str> {
+fn whitespace(s: &str) -> ReadResult<&str> {
     is_a(" \t\r\n")(s)
 }
 
-fn not_space_or_punctuation(s: &str) -> IResult<&str, &str> {
+fn not_space_or_punctuation(s: &str) -> ReadResult<&str> {
     is_not(" \t\r\n!,.:?…‽")(s)
 }
 
-fn punctuation(s: &str) -> IResult<&str, &str> {
+fn punctuation(s: &str) -> ReadResult<&str> {
     take_while(is_punctuation)(s)
 }
 
-fn report(s: &str) -> IResult<&str, Report> {
+fn report(s: &str) -> ReadResult<Report> {
     map(
-        complete(tuple((
+        tuple((
             terminated(report_declaration, whitespace0),
             terminated(many0(paragraph), whitespace0),
             report_closing,
-        ))),
+        )),
         |(declaration, paragraphs, closing)| Report {
             name: declaration,
             writer: closing,
@@ -81,7 +90,7 @@ fn report(s: &str) -> IResult<&str, Report> {
     )(s)
 }
 
-fn report_declaration(s: &str) -> IResult<&str, &str> {
+fn report_declaration(s: &str) -> ReadResult<&str> {
     terminated(
         preceded(
             preceded(tag("Dear Princes Celestia:"), whitespace0),
@@ -91,7 +100,7 @@ fn report_declaration(s: &str) -> IResult<&str, &str> {
     )(s)
 }
 
-fn paragraph(s: &str) -> IResult<&str, Paragraph> {
+fn paragraph(s: &str) -> ReadResult<Paragraph> {
     map(
         tuple((
             terminated(paragraph_declaration, whitespace0),
@@ -106,49 +115,90 @@ fn paragraph(s: &str) -> IResult<&str, Paragraph> {
     )(s)
 }
 
-fn paragraph_declaration(s: &str) -> IResult<&str, &str> {
+fn paragraph_declaration(s: &str) -> ReadResult<&str> {
     terminated(
         preceded(preceded(tag("Today I learned"), whitespace0), identifier),
         punctuation,
     )(s)
 }
 
-fn statement(s: &str) -> IResult<&str, Expr> {
+fn statement(s: &str) -> ReadResult<Expr> {
     terminated(
         terminated(preceded(preceded(print, whitespace0), expr), punctuation),
         whitespace0,
     )(s)
 }
 
-fn expr(s: &str) -> IResult<&str, Expr> {
-    map(literal, |l| Expr::Lit(l))(s)
+fn expr(s: &str) -> ReadResult<Expr> {
+    alt((add, value_expr))(s)
 }
 
-fn literal(s: &str) -> IResult<&str, Literal> {
+fn value_expr(s: &str) -> ReadResult<Expr> {
+    map(value, Expr::Val)(s)
+}
+
+fn literal(s: &str) -> ReadResult<Literal> {
     alt((string, number))(s)
 }
 
-fn string(s: &str) -> IResult<&str, Literal> {
+fn value(s: &str) -> ReadResult<Value> {
+    map(literal, Value::Lit)(s)
+}
+
+fn add(s: &str) -> ReadResult<Expr> {
+    alt((prefix_add, infix_add))(s)
+}
+
+fn prefix_add(s: &str) -> ReadResult<Expr> {
+    map(
+        preceded(
+            terminated(tag("add"), whitespace0),
+            separated_pair(
+                value,
+                delimited(whitespace0, tag("and"), whitespace0),
+                value,
+            ),
+        ),
+        |(left, right)| Expr::Add(left, right),
+    )(s)
+}
+
+fn infix_add(s: &str) -> ReadResult<Expr> {
+    fn infix_add_delim(s: &str) -> ReadResult<&str> {
+        delimited(
+            whitespace0,
+            alt((tag("added to"), tag("plus"), tag("and"))),
+            whitespace0,
+        )(s)
+    }
+
+    map(
+        separated_pair(value, infix_add_delim, value),
+        |(left, right)| Expr::Add(left, right),
+    )(s)
+}
+
+fn string(s: &str) -> ReadResult<Literal> {
     map(delimited(is_a("\""), is_not("\""), is_a("\"")), |s| {
         Literal::String(s)
     })(s)
 }
 
-fn number(s: &str) -> IResult<&str, Literal> {
+fn number(s: &str) -> ReadResult<Literal> {
     map(
         preceded(opt(terminated(tag("the number"), whitespace0)), double),
-        |n| Literal::Number(n),
+        Literal::Number,
     )(s)
 }
 
-fn paragraph_closing(s: &str) -> IResult<&str, &str> {
+fn paragraph_closing(s: &str) -> ReadResult<&str> {
     terminated(
         preceded(preceded(tag("That's all about"), whitespace0), identifier),
         punctuation,
     )(s)
 }
 
-fn report_closing(s: &str) -> IResult<&str, &str> {
+fn report_closing(s: &str) -> ReadResult<&str> {
     terminated(
         terminated(
             preceded(
@@ -161,27 +211,19 @@ fn report_closing(s: &str) -> IResult<&str, &str> {
     )(s)
 }
 
-fn line_comment(s: &str) -> IResult<&str, &str> {
+fn line_comment(s: &str) -> ReadResult<&str> {
     terminated(
         preceded(terminated(many1(tag("P.")), tag("S.")), is_not("\n\r")),
         opt(is_a("\n\r")),
     )(s)
 }
 
-fn multiline_comment(s: &str) -> IResult<&str, &str> {
+fn multiline_comment(s: &str) -> ReadResult<&str> {
     delimited(
         tag("("),
         recognize(many0(alt((is_not("()"), multiline_comment)))),
         tag(")"),
     )(s)
-}
-
-#[test]
-fn parses_does() {
-    use nom::error::ErrorKind;
-
-    assert_eq!(does("does"), Ok(("", "does")));
-    assert_eq!(does("not"), Err(nom::Err::Error(("not", ErrorKind::Tag))));
 }
 
 #[test]
@@ -253,8 +295,8 @@ fn parses_paragraph_closing() {
 fn parses_paragraph() {
     assert_eq!(
         paragraph(
-            "Today I learned how to fly.\
-             I said \"Fly!\".\
+            "Today I learned how to fly.
+             I said \"Fly!\".
              That's all about how to fly."
         ),
         Ok((
@@ -262,15 +304,15 @@ fn parses_paragraph() {
             Paragraph {
                 name: "how to fly",
                 closing_name: "how to fly",
-                statements: vec![Expr::Lit(Literal::String("Fly!"))],
+                statements: vec![Expr::Val(Value::Lit(Literal::String("Fly!")))],
             }
         ))
     );
     assert_eq!(
         paragraph(
-            "Today I learned how to fly.\
-             I said \"Fly1!\".\
-             I said the number 5.\
+            "Today I learned how to fly.
+             I said \"Fly1!\".
+             I said the number 5 added to 6.
              That's all about how to fly."
         ),
         Ok((
@@ -279,8 +321,11 @@ fn parses_paragraph() {
                 name: "how to fly",
                 closing_name: "how to fly",
                 statements: vec![
-                    Expr::Lit(Literal::String("Fly1!")),
-                    Expr::Lit(Literal::Number(5f64))
+                    Expr::Val(Value::Lit(Literal::String("Fly1!"))),
+                    Expr::Add(
+                        Value::Lit(Literal::Number(5f64)),
+                        Value::Lit(Literal::Number(6f64)),
+                    )
                 ],
             }
         ))
@@ -291,11 +336,13 @@ fn parses_paragraph() {
 fn parses_report() {
     assert_eq!(
         report(
-            "Dear Princes Celestia: An example letter.\
+            "Dear Princes Celestia: An example letter.
+
         Today I learned how to fly:
             I said \"Fly!\"!
         That's all about how to fly!
     Your faithful student: Twilight Sparkle.
+
     P.S. This is ignored"
         ),
         Ok((
@@ -305,7 +352,25 @@ fn parses_report() {
                 paragraphs: vec![Paragraph {
                     name: "how to fly",
                     closing_name: "how to fly",
-                    statements: vec![Expr::Lit(Literal::String("Fly!"))],
+                    statements: vec![Expr::Val(Value::Lit(Literal::String("Fly!")))],
+                }],
+                writer: " Twilight Sparkle",
+            }
+        ))
+    );
+    assert_eq!(
+        report(
+            "Dear Princess Celestia: An example letter.
+                Your faithful student: Twilight Sparkle."
+        ),
+        Ok((
+            "",
+            Report {
+                name: "An example letter",
+                paragraphs: vec![Paragraph {
+                    name: "how to fly",
+                    closing_name: "how to fly",
+                    statements: vec![Expr::Val(Value::Lit(Literal::String("Fly!")))],
                 }],
                 writer: " Twilight Sparkle",
             }
@@ -337,5 +402,43 @@ fn parses_literal() {
     assert_eq!(
         literal("the number -1.6"),
         Ok(("", Literal::Number(-1.6f64)))
+    );
+}
+
+#[test]
+fn parses_add() {
+    assert_eq!(
+        add("1 added to 2"),
+        Ok((
+            "",
+            Expr::Add(
+                Value::Lit(Literal::Number(1f64)),
+                Value::Lit(Literal::Number(2f64)),
+            )
+        ))
+    );
+    assert_eq!(
+        add("add 1 and 2"),
+        Ok((
+            "",
+            Expr::Add(
+                Value::Lit(Literal::Number(1f64)),
+                Value::Lit(Literal::Number(2f64)),
+            )
+        ))
+    );
+}
+
+#[test]
+fn parses_statement() {
+    assert_eq!(
+        statement("I wrote 1 added to 2."),
+        Ok((
+            "",
+            Expr::Add(
+                Value::Lit(Literal::Number(1f64)),
+                Value::Lit(Literal::Number(2f64)),
+            )
+        ))
     );
 }

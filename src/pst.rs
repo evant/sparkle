@@ -22,7 +22,12 @@ pub enum Literal<'a> {
 
 #[derive(Debug, PartialEq)]
 pub enum Expr<'a> {
-    Add(Box<Expr<'a>>, Box<Expr<'a>>),
+    Add(Value<'a>, Value<'a>),
+    Val(Value<'a>),
+}
+
+#[derive(Debug, PartialEq)]
+pub enum Value<'a> {
     Lit(Literal<'a>),
 }
 
