@@ -65,6 +65,9 @@ const TARGET_TRIPLE: &'static str = "x86_64-unknown-unknown-elf";
 #[cfg(target_os = "macos")]
 const TARGET_TRIPLE: &'static str = "x86_64-unknown-unknown-macho";
 
+#[cfg(target_os = "windows")]
+const TARGET_TRIPLE: &'static str = "x86_64-pc-windows-msvc";
+
 fn faerie_sender(name: &str) -> Result<Sender<FaerieBackend>, ReportError> {
     let mut flag_builder = settings::builder();
     flag_builder.enable("is_pic").unwrap();
