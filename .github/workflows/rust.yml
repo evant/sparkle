@@ -20,10 +20,8 @@ jobs:
 
     steps:
     - uses: actions/checkout@v1
-    - name: GitHub Action for Homebrew
-      uses: artemnovichkov/action-homebrew@0.1.0
-      with:
-        args: install cargo
+    - name: Install rust
+      run: brew install rust
     - name: Build
       run: cargo build --verbose
     - name: Run tests
