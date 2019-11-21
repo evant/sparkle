@@ -15,8 +15,8 @@ use crate::error::ReportError;
 use crate::pst;
 use crate::pst::{Expr, Literal, Paragraph, Report};
 
-pub fn send_out<'a>(report: &'a Report, name: &str) -> Result<(), ReportError> {
-    let mut sender = faerie_sender(name)?;
+pub fn send_out<'a>(report: &'a Report, name: &str, target: &str) -> Result<(), ReportError> {
+    let mut sender = faerie_sender(name, target)?;
     let mut context = sender.module.make_context();
     send(report, &mut sender, &mut context)?;
     sender.finalize(&mut context);
@@ -59,19 +59,10 @@ pub fn proofread<'a>(report: &'a Report<'a>) -> Result<(), ReportError> {
     Ok(())
 }
 
-#[cfg(target_os = "linux")]
-const TARGET_TRIPLE: &'static str = "x86_64-unknown-unknown-elf";
-
-#[cfg(target_os = "macos")]
-const TARGET_TRIPLE: &'static str = "x86_64-unknown-unknown-macho";
-
-#[cfg(target_os = "windows")]
-const TARGET_TRIPLE: &'static str = "x86_64-pc-windows-msvc";
-
-fn faerie_sender(name: &str) -> Result<Sender<FaerieBackend>, ReportError> {
+fn faerie_sender(name: &str, target: &str) -> Result<Sender<FaerieBackend>, ReportError> {
     let mut flag_builder = settings::builder();
     flag_builder.enable("is_pic").unwrap();
-    let isa_builder = isa::lookup(Triple::from_str(TARGET_TRIPLE)?)?;
+    let isa_builder = isa::lookup(Triple::from_str(target)?)?;
     let isa = isa_builder.finish(settings::Flags::new(flag_builder));
     let builder = FaerieBuilder::new(
         isa,
