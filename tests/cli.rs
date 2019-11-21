@@ -32,7 +32,6 @@ fn say_hello_to_everypony() -> Result<(), CargoError> {
 }
 
 #[test]
-#[ignore] // jit float printing needs to be fixed
 fn math() -> Result<(), CargoError> {
     let mut cmd = Command::cargo_bin("fimpp")?;
 

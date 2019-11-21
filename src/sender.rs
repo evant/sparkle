@@ -149,29 +149,25 @@ fn send_statement<'a, B: Backend>(
 ) -> Result<(), ReportError> {
     let (type_, value) = send_expression(statement, sender, builder)?;
 
-    let (format, param_type) = match type_ {
-        crate::types::Type::String => ("%s\n", sender.module.target_config().pointer_type()),
-        crate::types::Type::Number => ("%f\n", types::F64),
+    let value = match type_ {
+        crate::types::Type::String => value,
+        crate::types::Type::Number => {
+            // convert to string
+            let slot = builder.create_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, 24));
+            let buff = builder.ins().stack_addr(sender.pointer_type, slot, 0);
+            float_to_string(value, buff, sender, builder)?
+        }
     };
 
     let mut sig = sender.module.make_signature();
     sig.params
-        .push(AbiParam::new(sender.module.target_config().pointer_type()));
+        .push(AbiParam::new(sender.pointer_type));
     let callee = sender
         .module
-        .declare_function("printf", Linkage::Import, &sig)?;
+        .declare_function("puts", Linkage::Import, &sig)?;
     let local_callee = sender.module.declare_func_in_func(callee, builder.func);
 
-    let format_value = reference_constant_string(format, sender, builder)?;
-    let _call = builder.ins().call(local_callee, &[format_value, value]);
-
-    // TODO: better way to support varargs?
-    // https://github.com/bytecodealliance/cranelift/issues/212
-    // https://github.com/bjorn3/rustc_codegen_cranelift/blob/1f8a646592d6e372b614cb94724deaea1753464b/src/abi/mod.rs#L531
-    let sig_ref = builder.func.dfg.call_signature(_call).unwrap();
-    builder.func.dfg.signatures[sig_ref]
-        .params
-        .push(AbiParam::new(param_type));
+    let _call = builder.ins().call(local_callee, &[value]);
 
     Ok(())
 }
@@ -243,6 +239,31 @@ fn create_constant_string<B: Backend>(
     Ok(())
 }
 
+fn float_to_string<B: Backend>(
+    float_value: Value,
+    buffer_value: Value,
+    sender: &mut Sender<B>,
+    builder: &mut FunctionBuilder,
+) -> Result<Value, ReportError> {
+    let mut sig = sender.module.make_signature();
+    sig.params.push(AbiParam::new(types::F64));
+    sig.params.push(AbiParam::new(types::I32));
+    sig.params.push(AbiParam::new(sender.pointer_type));
+    sig.returns.push(AbiParam::new(sender.pointer_type));
+
+    let callee = sender
+        .module
+        .declare_function("gcvt", Linkage::Import, &sig)?;
+    let local_callee = sender.module.declare_func_in_func(callee, builder.func);
+
+    let n_digits = builder.ins().iconst(types::I32, 9);
+    let call = builder
+        .ins()
+        .call(local_callee, &[float_value, n_digits, buffer_value]);
+
+    Ok(builder.inst_results(call)[0])
+}
+
 fn reference_constant_string<B: Backend>(
     string: &str,
     sender: &mut Sender<B>,
@@ -261,13 +282,16 @@ fn reference_constant_string<B: Backend>(
 struct Sender<B: Backend> {
     module: Module<B>,
     data_context: DataContext,
+    pointer_type: Type,
 }
 
 impl<B: Backend> Sender<B> {
     fn new(module: Module<B>) -> Sender<B> {
+        let pointer_type = module.target_config().pointer_type();
         Sender {
             module,
             data_context: DataContext::new(),
+            pointer_type,
         }
     }
 
