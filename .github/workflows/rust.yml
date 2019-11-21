@@ -2,6 +2,7 @@ name: Rust
 
 on: [push]
 
+
 jobs:
   build-linux:
 
@@ -19,6 +20,10 @@ jobs:
 
     steps:
     - uses: actions/checkout@v1
+    - name: GitHub Action for Homebrew
+      uses: artemnovichkov/action-homebrew@0.1.0
+      with:
+        args: install cargo
     - name: Build
       run: cargo build --verbose
     - name: Run tests
