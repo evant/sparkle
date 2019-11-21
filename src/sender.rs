@@ -59,10 +59,16 @@ pub fn proofread<'a>(report: &'a Report<'a>) -> Result<(), ReportError> {
     Ok(())
 }
 
+#[cfg(target_os = "linux")]
+const TARGET_TRIPLE: &'static str = "x86_64-unknown-unknown-elf";
+
+#[cfg(target_os = "macos")]
+const TARGET_TRIPLE: &'static str = "x86_64-unknown-unknown-macho";
+
 fn faerie_sender(name: &str) -> Result<Sender<FaerieBackend>, ReportError> {
     let mut flag_builder = settings::builder();
     flag_builder.enable("is_pic").unwrap();
-    let isa_builder = isa::lookup(Triple::from_str("x86_64-unknown-unknown-elf")?)?;
+    let isa_builder = isa::lookup(Triple::from_str(TARGET_TRIPLE)?)?;
     let isa = isa_builder.finish(settings::Flags::new(flag_builder));
     let builder = FaerieBuilder::new(
         isa,
