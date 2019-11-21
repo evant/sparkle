@@ -13,7 +13,6 @@ use target_lexicon::Triple;
 
 use crate::error::ReportError;
 use crate::pst::{Expr, Literal, Paragraph, Report};
-use nom::combinator::map_opt;
 
 pub fn send_out<'a>(report: &'a Report, name: &str) -> Result<(), ReportError<'a>> {
     let mut sender = faerie_sender(name)?;
@@ -40,7 +39,7 @@ pub fn gallop<'a>(report: &'a Report, _name: &str) -> Result<(), ReportError<'a>
     Ok(())
 }
 
-pub fn ir<'a>(report: &'a Report<'a>) -> Result<(), ReportError<'a>> {
+pub fn proofread<'a>(report: &'a Report<'a>) -> Result<(), ReportError<'a>> {
     let mut sender = simple_jit_sender();
     let mut context = sender.module.make_context();
 

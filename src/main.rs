@@ -13,20 +13,20 @@ mod types;
 enum Options {
     Send,
     Gallop,
-    Ir,
+    Proofread,
 }
 
 fn main() {
     let args: Vec<_> = args().skip(1).collect();
     if args.len() < 2 {
-        println!("usage: fimpp [send|gallop|ir] report.fpp");
+        println!("usage: fimpp [send|gallop|proofread] report.fpp");
         return;
     }
     let option = args[0].borrow();
     let option = match option {
         "send" => Options::Send,
         "gallop" => Options::Gallop,
-        "ir" => Options::Ir,
+        "proofread" => Options::Proofread,
         o => {
             eprintln!("unrecognized option: {}", o);
             exit(1);
@@ -44,6 +44,6 @@ fn main() {
     match option {
         Options::Send => sender::send_out(&ast, name).unwrap(),
         Options::Gallop => sender::gallop(&ast, name).unwrap(),
-        Options::Ir => sender::ir(&ast).unwrap(),
+        Options::Proofread => sender::proofread(&ast).unwrap(),
     }
 }
