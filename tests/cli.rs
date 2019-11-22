@@ -9,7 +9,11 @@ fn hello_canterlot() -> Result<(), CargoError> {
 
     cmd.arg("gallop").arg("examples/hello_canterlot.fpp");
 
-    cmd.assert().success().stdout("Hello, Canterlot!\n");
+    cmd.assert().success().stdout(
+        "Hello, Canterlot!\n\
+         2\n\
+         yes\n",
+    );
 
     Ok(())
 }

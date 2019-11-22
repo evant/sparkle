@@ -139,7 +139,7 @@ fn value_expr(s: &str) -> ReadResult<Expr> {
 }
 
 fn literal(s: &str) -> ReadResult<Literal> {
-    alt((string, number))(s)
+    alt((string, number, boolean))(s)
 }
 
 fn value(s: &str) -> ReadResult<Value> {
@@ -247,6 +247,18 @@ fn infix_div(s: &str) -> ReadResult<Expr> {
     map(infix(alt((tag("divided by"), tag("over"))), value, value), |(left, right)|
         Expr::NBinOp(NBinOperator::Div, left, right),
     )(s)
+}
+
+fn boolean(s: &str) -> ReadResult<Literal> {
+    alt((true_, false_))(s)
+}
+
+fn true_(s: &str) -> ReadResult<Literal> {
+    map(alt((tag("correct"), tag("right"), tag("true"), tag("yes"))), |_| Literal::Boolean(true))(s)
+}
+
+fn false_(s: &str) -> ReadResult<Literal> {
+    map(alt((tag("false"), tag("incorrect"), tag("no"), tag("wrong"))), |_| Literal::Boolean(false))(s)
 }
 
 fn string(s: &str) -> ReadResult<Literal> {
@@ -384,6 +396,7 @@ fn parses_paragraph() {
             "Today I learned how to fly.
              I said \"Fly1!\".
              I said the number 5 added to 6.
+             I said yes.
              That's all about how to fly."
         ),
         Ok((
@@ -397,7 +410,8 @@ fn parses_paragraph() {
                         NBinOperator::Add,
                         Value::Lit(Literal::Number(5f64)),
                         Value::Lit(Literal::Number(6f64)),
-                    )
+                    ),
+                    Expr::Val(Value::Lit(Literal::Boolean(true))),
                 ],
             }
         ))

@@ -2,6 +2,7 @@
 pub enum Type {
     String,
     Number,
+    Boolean,
 }
 
 impl Type {

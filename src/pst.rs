@@ -18,6 +18,7 @@ pub struct Report<'a> {
 pub enum Literal<'a> {
     String(&'a str),
     Number(f64),
+    Boolean(bool),
 }
 
 #[derive(Debug, PartialEq)]
@@ -28,19 +29,13 @@ pub enum Expr<'a> {
 
 #[derive(Debug, PartialEq)]
 pub enum NBinOperator {
-    Add, Sub, Mul, Div
+    Add,
+    Sub,
+    Mul,
+    Div,
 }
 
 #[derive(Debug, PartialEq)]
 pub enum Value<'a> {
     Lit(Literal<'a>),
-}
-
-impl<'a> Literal<'a> {
-    pub fn to_cow_string(&self) -> Cow<'a, str> {
-        match self {
-            Literal::String(s) => (*s).into(),
-            Literal::Number(n) => n.to_string().into(),
-        }
-    }
 }

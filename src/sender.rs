@@ -98,9 +98,9 @@ fn send<'a, B: Backend>(
     builder.switch_to_block(entry_ebb);
     builder.seal_block(entry_ebb);
 
-    // constant strings for formatting with printf
-    create_constant_string("%s\n", sender)?;
-    create_constant_string("%f\n", sender)?;
+    // constant strings for printing booleans
+    create_constant_string("yes", sender)?;
+    create_constant_string("no", sender)?;
 
     if !report.paragraphs.is_empty() {
         send_paragraph(&report.paragraphs[0], sender, &mut builder)?;
@@ -147,6 +147,25 @@ fn send_statement<'a, B: Backend>(
             let slot = builder.create_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, 24));
             let buff = builder.ins().stack_addr(sender.pointer_type, slot, 0);
             float_to_string(value, buff, sender, builder)?
+        }
+        crate::types::Type::Boolean => {
+            let else_block = builder.create_ebb();
+            let merge_block = builder.create_ebb();
+            builder.append_ebb_param(merge_block, sender.pointer_type);
+
+            builder.ins().brz(value, else_block, &[]);
+            let then_return = reference_constant_string("yes", sender, builder)?;
+            builder.ins().jump(merge_block, &[then_return]);
+
+            builder.switch_to_block(else_block);
+            builder.seal_block(else_block);
+            let else_return = reference_constant_string("no", sender, builder)?;
+            builder.ins().jump(merge_block, &[else_return]);
+
+            builder.switch_to_block(merge_block);
+            builder.seal_block(merge_block);
+
+            builder.ebb_params(merge_block)[0]
         }
     };
 
@@ -211,6 +230,7 @@ fn send_value<'a, B: Backend>(
                 )
             }
             Literal::Number(n) => (crate::types::Type::Number, builder.ins().f64const(*n)),
+            Literal::Boolean(b) => (crate::types::Type::Boolean, builder.ins().bconst(types::B1, *b)),
         },
     };
 

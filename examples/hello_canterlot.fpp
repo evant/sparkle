@@ -2,6 +2,8 @@ Dear Princes Celestia: I went to Canterlot!
 
 Today I learned how to say hello:
 I said "Hello, Canterlot!".
+I said 2.
+I said yes.
 That's all about how to say hello.
 
 Your faithful student: Twilight Sparkle.
