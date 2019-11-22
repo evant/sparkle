@@ -13,7 +13,7 @@ use target_lexicon::Triple;
 
 use crate::error::ReportError;
 use crate::pst;
-use crate::pst::{Expr, Literal, Paragraph, Report};
+use crate::pst::{Expr, Literal, Paragraph, Report, NBinOperator};
 
 pub fn send_out<'a>(report: &'a Report, name: &str, target: &str) -> Result<(), ReportError> {
     let mut sender = faerie_sender(name, target)?;
@@ -169,7 +169,7 @@ fn send_expression<'a, B: Backend>(
     builder: &mut FunctionBuilder,
 ) -> Result<(crate::types::Type, Value), ReportError> {
     let result = match expr {
-        Expr::Add(left, right) => {
+        Expr::NBinOp(op, left, right) => {
             let (left_type, left_value) = send_value(left, sender, builder)?;
             let (right_type, right_value) = send_value(right, sender, builder)?;
 
@@ -182,7 +182,12 @@ fn send_expression<'a, B: Backend>(
 
             (
                 crate::types::Type::Number,
-                builder.ins().fadd(left_value, right_value),
+                match op {
+                    NBinOperator::Add => builder.ins().fadd(left_value, right_value),
+                    NBinOperator::Sub => builder.ins().fsub(left_value, right_value),
+                    NBinOperator::Mul => builder.ins().fmul(left_value, right_value),
+                    NBinOperator::Div => builder.ins().fdiv(left_value, right_value),
+                }
             )
         }
         Expr::Val(val) => send_value(val, sender, builder)?,

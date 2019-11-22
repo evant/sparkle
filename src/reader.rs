@@ -2,14 +2,15 @@ use nom::branch::alt;
 use nom::bytes::complete::{is_a, is_not, tag, take_till1, take_while};
 use nom::character::complete::space1;
 use nom::combinator::{complete, map, opt, recognize};
-use nom::error::{convert_error, VerboseError};
+use nom::error::{convert_error, ParseError, VerboseError};
+use nom::IResult;
 use nom::multi::{many0, many1, separated_list};
 use nom::number::complete::double;
 use nom::sequence::{delimited, preceded, separated_pair, terminated, tuple};
-use nom::IResult;
 
 use crate::error::ReportError;
-use crate::pst::{Expr, Literal, Paragraph, Report, Value};
+use crate::pst::{Expr, Literal, NBinOperator, Paragraph, Report, Value};
+use crate::pst::Expr::NBinOp;
 
 type ReadResult<'a, O> = IResult<&'a str, O, VerboseError<&'a str>>;
 
@@ -130,7 +131,7 @@ fn statement(s: &str) -> ReadResult<Expr> {
 }
 
 fn expr(s: &str) -> ReadResult<Expr> {
-    alt((add, value_expr))(s)
+    alt((add, sub, mul, div, value_expr))(s)
 }
 
 fn value_expr(s: &str) -> ReadResult<Expr> {
@@ -145,36 +146,106 @@ fn value(s: &str) -> ReadResult<Value> {
     map(literal, Value::Lit)(s)
 }
 
+fn prefix<'a, O1, O2, P1, P2, V1, V2>(op1: P1, op2: P2, first: V1, second: V2) -> impl Fn(&'a str) -> ReadResult<(O2, O2)>
+    where
+        P1: Fn(&'a str) -> ReadResult<O1>,
+        P2: Fn(&'a str) -> ReadResult<O1>,
+        V1: Fn(&'a str) -> ReadResult<O2>,
+        V2: Fn(&'a str) -> ReadResult<O2>,
+{
+    preceded(
+        terminated(op1, whitespace0),
+        separated_pair(
+            first,
+            delimited(whitespace0, op2, whitespace0),
+            second,
+        ))
+}
+
+fn infix<'a, O1, O2, P, V1, V2>(operator: P, left: V1, right: V2) -> impl Fn(&'a str) -> ReadResult<(O2, O2)>
+    where
+        P: Fn(&'a str) -> ReadResult<O1>,
+        V1: Fn(&'a str) -> ReadResult<O2>,
+        V2: Fn(&'a str) -> ReadResult<O2>,
+{
+    let infix_delim = delimited(
+        whitespace0,
+        operator,
+        whitespace0,
+    );
+    separated_pair(left, infix_delim, right)
+}
+
 fn add(s: &str) -> ReadResult<Expr> {
     alt((prefix_add, infix_add))(s)
 }
 
 fn prefix_add(s: &str) -> ReadResult<Expr> {
     map(
-        preceded(
-            terminated(tag("add"), whitespace0),
-            separated_pair(
-                value,
-                delimited(whitespace0, tag("and"), whitespace0),
-                value,
-            ),
-        ),
-        |(left, right)| Expr::Add(left, right),
+        prefix(tag("add"), tag("and"), value, value),
+        |(left, right)| Expr::NBinOp(NBinOperator::Add, left, right),
     )(s)
 }
 
 fn infix_add(s: &str) -> ReadResult<Expr> {
-    fn infix_add_delim(s: &str) -> ReadResult<&str> {
-        delimited(
-            whitespace0,
-            alt((tag("added to"), tag("plus"), tag("and"))),
-            whitespace0,
-        )(s)
-    }
+    map(infix(alt((tag("added to"), tag("plus"), tag("and"))), value, value), |(left, right)|
+        Expr::NBinOp(NBinOperator::Add, left, right),
+    )(s)
+}
 
+fn sub(s: &str) -> ReadResult<Expr> {
+    alt((prefix_sub, infix_sub))(s)
+}
+
+fn prefix_sub(s: &str) -> ReadResult<Expr> {
     map(
-        separated_pair(value, infix_add_delim, value),
-        |(left, right)| Expr::Add(left, right),
+        alt((
+            prefix(tag("the difference between"), tag("and"), value, value),
+            prefix(tag("subtract"), tag("from"), value, value))),
+        |(left, right)| Expr::NBinOp(NBinOperator::Sub, left, right),
+    )(s)
+}
+
+fn infix_sub(s: &str) -> ReadResult<Expr> {
+    map(infix(alt((tag("minus"), tag("without"))), value, value), |(left, right)|
+        Expr::NBinOp(NBinOperator::Sub, left, right),
+    )(s)
+}
+
+fn mul(s: &str) -> ReadResult<Expr> {
+    alt((prefix_mul, infix_mul))(s)
+}
+
+fn prefix_mul(s: &str) -> ReadResult<Expr> {
+    map(
+        alt((
+            prefix(tag("multiply"), alt((tag("by"), tag("and"))), value, value),
+            prefix(tag("the product of"), tag("and"), value, value),
+        )),
+        |(left, right)| Expr::NBinOp(NBinOperator::Mul, left, right),
+    )(s)
+}
+
+fn infix_mul(s: &str) -> ReadResult<Expr> {
+    map(infix(alt((tag("multiplied with"), tag("times"))), value, value), |(left, right)|
+        Expr::NBinOp(NBinOperator::Mul, left, right),
+    )(s)
+}
+
+fn div(s: &str) -> ReadResult<Expr> {
+    alt((prefix_div, infix_div))(s)
+}
+
+fn prefix_div(s: &str) -> ReadResult<Expr> {
+    map(
+        prefix(tag("divide"), alt((tag("by"), tag("and"))), value, value),
+        |(left, right)| Expr::NBinOp(NBinOperator::Div, left, right),
+    )(s)
+}
+
+fn infix_div(s: &str) -> ReadResult<Expr> {
+    map(infix(alt((tag("divided by"), tag("over"))), value, value), |(left, right)|
+        Expr::NBinOp(NBinOperator::Div, left, right),
     )(s)
 }
 
@@ -322,7 +393,8 @@ fn parses_paragraph() {
                 closing_name: "how to fly",
                 statements: vec![
                     Expr::Val(Value::Lit(Literal::String("Fly1!"))),
-                    Expr::Add(
+                    Expr::NBinOp(
+                        NBinOperator::Add,
                         Value::Lit(Literal::Number(5f64)),
                         Value::Lit(Literal::Number(6f64)),
                     )
@@ -393,7 +465,8 @@ fn parses_add() {
         add("1 added to 2"),
         Ok((
             "",
-            Expr::Add(
+            Expr::NBinOp(
+                NBinOperator::Add,
                 Value::Lit(Literal::Number(1f64)),
                 Value::Lit(Literal::Number(2f64)),
             )
@@ -403,9 +476,88 @@ fn parses_add() {
         add("add 1 and 2"),
         Ok((
             "",
-            Expr::Add(
+            Expr::NBinOp(
+                NBinOperator::Add,
                 Value::Lit(Literal::Number(1f64)),
                 Value::Lit(Literal::Number(2f64)),
+            )
+        ))
+    );
+}
+
+#[test]
+fn parses_sub() {
+    assert_eq!(
+        sub("2 minus 1"),
+        Ok((
+            "",
+            Expr::NBinOp(
+                NBinOperator::Sub,
+                Value::Lit(Literal::Number(2f64)),
+                Value::Lit(Literal::Number(1f64)),
+            )
+        ))
+    );
+    assert_eq!(
+        sub("the difference between 2 and 1"),
+        Ok((
+            "",
+            Expr::NBinOp(
+                NBinOperator::Sub,
+                Value::Lit(Literal::Number(2f64)),
+                Value::Lit(Literal::Number(1f64)),
+            )
+        ))
+    );
+}
+
+#[test]
+fn parses_mul() {
+    assert_eq!(
+        mul("2 multiplied with 1"),
+        Ok((
+            "",
+            Expr::NBinOp(
+                NBinOperator::Mul,
+                Value::Lit(Literal::Number(2f64)),
+                Value::Lit(Literal::Number(1f64)),
+            )
+        ))
+    );
+    assert_eq!(
+        mul("the product of 2 and 1"),
+        Ok((
+            "",
+            Expr::NBinOp(
+                NBinOperator::Mul,
+                Value::Lit(Literal::Number(2f64)),
+                Value::Lit(Literal::Number(1f64)),
+            )
+        ))
+    );
+}
+
+#[test]
+fn parses_div() {
+    assert_eq!(
+        div("2 divided by 1"),
+        Ok((
+            "",
+            Expr::NBinOp(
+                NBinOperator::Div,
+                Value::Lit(Literal::Number(2f64)),
+                Value::Lit(Literal::Number(1f64)),
+            )
+        ))
+    );
+    assert_eq!(
+        div("divide 2 by 1"),
+        Ok((
+            "",
+            Expr::NBinOp(
+                NBinOperator::Div,
+                Value::Lit(Literal::Number(2f64)),
+                Value::Lit(Literal::Number(1f64)),
             )
         ))
     );
@@ -417,7 +569,8 @@ fn parses_statement() {
         statement("I wrote 1 added to 2."),
         Ok((
             "",
-            Expr::Add(
+            Expr::NBinOp(
+                NBinOperator::Add,
                 Value::Lit(Literal::Number(1f64)),
                 Value::Lit(Literal::Number(2f64)),
             )

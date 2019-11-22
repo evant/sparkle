@@ -22,8 +22,13 @@ pub enum Literal<'a> {
 
 #[derive(Debug, PartialEq)]
 pub enum Expr<'a> {
-    Add(Value<'a>, Value<'a>),
+    NBinOp(NBinOperator, Value<'a>, Value<'a>),
     Val(Value<'a>),
+}
+
+#[derive(Debug, PartialEq)]
+pub enum NBinOperator {
+    Add, Sub, Mul, Div
 }
 
 #[derive(Debug, PartialEq)]

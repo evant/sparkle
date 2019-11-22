@@ -39,7 +39,11 @@ fn math() -> Result<(), CargoError> {
 
     cmd.assert().success().stdout(
         "7\n\
-         10\n",
+         10\n\
+         4\n\
+         5\n\
+         6\n\
+         5.5\n",
     );
 
     Ok(())
