@@ -4,11 +4,12 @@ use std::fmt::{Debug, Formatter, Result};
 
 use nom::error::{ErrorKind, VerboseError};
 
-use crate::error::ReportError::{ReadError, SendError, TypeError};
+use crate::error::ReportError::{ReadError, SendError, TypeError, ModuleError};
 
 pub enum ReportError {
     ReadError(String),
     SendError(String),
+    ModuleError(cranelift_module::ModuleError),
     TypeError(String),
 }
 
@@ -17,6 +18,7 @@ impl fmt::Display for ReportError {
         match self {
             ReadError(e) => write!(f, "{}", e),
             SendError(e) => write!(f, "{}", e),
+            ModuleError(e) => fmt::Display::fmt(e, f),
             TypeError(e) => write!(f, "{}", e),
         }
     }
@@ -27,6 +29,7 @@ impl fmt::Debug for ReportError {
         match self {
             ReadError(e) => write!(f, "{}", e),
             SendError(e) => write!(f, "{}", e),
+            ModuleError(e) => fmt::Debug::fmt(e, f),
             TypeError(e) => write!(f, "{}", e),
         }
     }
@@ -48,7 +51,7 @@ impl From<cranelift::prelude::isa::LookupError> for ReportError {
 
 impl From<cranelift_module::ModuleError> for ReportError {
     fn from(e: cranelift_module::ModuleError) -> Self {
-        SendError(e.to_string())
+        ModuleError(e)
     }
 }
 

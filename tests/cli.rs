@@ -3,23 +3,21 @@ use std::process::Command;
 use assert_cmd::cargo::CargoError;
 use assert_cmd::prelude::*;
 
+type TestResult = Result<(), CargoError>;
+
 #[test]
-fn hello_canterlot() -> Result<(), CargoError> {
+fn hello_canterlot() -> TestResult {
     let mut cmd = Command::cargo_bin("fimpp")?;
 
     cmd.arg("gallop").arg("examples/hello_canterlot.fpp");
 
-    cmd.assert().success().stdout(
-        "Hello, Canterlot!\n\
-         2\n\
-         yes\n",
-    );
+    cmd.assert().success().stdout("Hello, Canterlot!\n");
 
     Ok(())
 }
 
 #[test]
-fn say_hello_to_everypony() -> Result<(), CargoError> {
+fn say_hello_to_everypony() -> TestResult {
     let mut cmd = Command::cargo_bin("fimpp")?;
 
     cmd.arg("gallop").arg("examples/hello_everypony.fpp");
@@ -36,7 +34,7 @@ fn say_hello_to_everypony() -> Result<(), CargoError> {
 }
 
 #[test]
-fn math() -> Result<(), CargoError> {
+fn math() -> TestResult {
     let mut cmd = Command::cargo_bin("fimpp")?;
 
     cmd.arg("gallop").arg("examples/math.fpp");
@@ -54,7 +52,26 @@ fn math() -> Result<(), CargoError> {
 }
 
 #[test]
-fn sends_hello_canterlot() -> Result<(), CargoError> {
+fn logic() -> TestResult {
+    let mut cmd = Command::cargo_bin("fimpp")?;
+
+    cmd.arg("gallop").arg("examples/logic.fpp");
+
+    cmd.assert().success().stdout(
+        "yes\n\
+         no\n\
+         yes\n\
+         no\n\
+         yes\n\
+         no\n\
+         no\n",
+    );
+
+    Ok(())
+}
+
+#[test]
+fn sends_hello_canterlot() -> TestResult {
     let mut cmd = Command::cargo_bin("fimpp")?;
 
     cmd.arg("send").arg("examples/hello_canterlot.fpp");

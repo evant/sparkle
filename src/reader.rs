@@ -3,14 +3,14 @@ use nom::bytes::complete::{is_a, is_not, tag, take_till1, take_while};
 use nom::character::complete::space1;
 use nom::combinator::{complete, map, opt, recognize};
 use nom::error::{convert_error, ParseError, VerboseError};
-use nom::IResult;
 use nom::multi::{many0, many1, separated_list};
 use nom::number::complete::double;
 use nom::sequence::{delimited, preceded, separated_pair, terminated, tuple};
+use nom::IResult;
 
 use crate::error::ReportError;
-use crate::pst::{Expr, Literal, NBinOperator, Paragraph, Report, Value};
 use crate::pst::Expr::NBinOp;
+use crate::pst::{BBinOperator, Expr, Literal, NBinOperator, Paragraph, Report, Value};
 
 type ReadResult<'a, O> = IResult<&'a str, O, VerboseError<&'a str>>;
 
@@ -131,7 +131,7 @@ fn statement(s: &str) -> ReadResult<Expr> {
 }
 
 fn expr(s: &str) -> ReadResult<Expr> {
-    alt((add, sub, mul, div, value_expr))(s)
+    alt((and, or, xor, not, add, sub, mul, div, value_expr))(s)
 }
 
 fn value_expr(s: &str) -> ReadResult<Expr> {
@@ -146,33 +146,35 @@ fn value(s: &str) -> ReadResult<Value> {
     map(literal, Value::Lit)(s)
 }
 
-fn prefix<'a, O1, O2, P1, P2, V1, V2>(op1: P1, op2: P2, first: V1, second: V2) -> impl Fn(&'a str) -> ReadResult<(O2, O2)>
-    where
-        P1: Fn(&'a str) -> ReadResult<O1>,
-        P2: Fn(&'a str) -> ReadResult<O1>,
-        V1: Fn(&'a str) -> ReadResult<O2>,
-        V2: Fn(&'a str) -> ReadResult<O2>,
+fn prefix<'a, O1, O2, P1, P2, V1, V2>(
+    op1: P1,
+    op2: P2,
+    first: V1,
+    second: V2,
+) -> impl Fn(&'a str) -> ReadResult<(O2, O2)>
+where
+    P1: Fn(&'a str) -> ReadResult<O1>,
+    P2: Fn(&'a str) -> ReadResult<O1>,
+    V1: Fn(&'a str) -> ReadResult<O2>,
+    V2: Fn(&'a str) -> ReadResult<O2>,
 {
     preceded(
         terminated(op1, whitespace0),
-        separated_pair(
-            first,
-            delimited(whitespace0, op2, whitespace0),
-            second,
-        ))
+        separated_pair(first, delimited(whitespace0, op2, whitespace0), second),
+    )
 }
 
-fn infix<'a, O1, O2, P, V1, V2>(operator: P, left: V1, right: V2) -> impl Fn(&'a str) -> ReadResult<(O2, O2)>
-    where
-        P: Fn(&'a str) -> ReadResult<O1>,
-        V1: Fn(&'a str) -> ReadResult<O2>,
-        V2: Fn(&'a str) -> ReadResult<O2>,
+fn infix<'a, O1, O2, P, V1, V2>(
+    operator: P,
+    left: V1,
+    right: V2,
+) -> impl Fn(&'a str) -> ReadResult<(O2, O2)>
+where
+    P: Fn(&'a str) -> ReadResult<O1>,
+    V1: Fn(&'a str) -> ReadResult<O2>,
+    V2: Fn(&'a str) -> ReadResult<O2>,
 {
-    let infix_delim = delimited(
-        whitespace0,
-        operator,
-        whitespace0,
-    );
+    let infix_delim = delimited(whitespace0, operator, whitespace0);
     separated_pair(left, infix_delim, right)
 }
 
@@ -188,8 +190,13 @@ fn prefix_add(s: &str) -> ReadResult<Expr> {
 }
 
 fn infix_add(s: &str) -> ReadResult<Expr> {
-    map(infix(alt((tag("added to"), tag("plus"), tag("and"))), value, value), |(left, right)|
-        Expr::NBinOp(NBinOperator::Add, left, right),
+    map(
+        infix(
+            alt((tag("added to"), tag("plus"), tag("and"))),
+            value,
+            value,
+        ),
+        |(left, right)| Expr::NBinOp(NBinOperator::Add, left, right),
     )(s)
 }
 
@@ -201,14 +208,16 @@ fn prefix_sub(s: &str) -> ReadResult<Expr> {
     map(
         alt((
             prefix(tag("the difference between"), tag("and"), value, value),
-            prefix(tag("subtract"), tag("from"), value, value))),
+            prefix(tag("subtract"), tag("from"), value, value),
+        )),
         |(left, right)| Expr::NBinOp(NBinOperator::Sub, left, right),
     )(s)
 }
 
 fn infix_sub(s: &str) -> ReadResult<Expr> {
-    map(infix(alt((tag("minus"), tag("without"))), value, value), |(left, right)|
-        Expr::NBinOp(NBinOperator::Sub, left, right),
+    map(
+        infix(alt((tag("minus"), tag("without"))), value, value),
+        |(left, right)| Expr::NBinOp(NBinOperator::Sub, left, right),
     )(s)
 }
 
@@ -227,8 +236,9 @@ fn prefix_mul(s: &str) -> ReadResult<Expr> {
 }
 
 fn infix_mul(s: &str) -> ReadResult<Expr> {
-    map(infix(alt((tag("multiplied with"), tag("times"))), value, value), |(left, right)|
-        Expr::NBinOp(NBinOperator::Mul, left, right),
+    map(
+        infix(alt((tag("multiplied with"), tag("times"))), value, value),
+        |(left, right)| Expr::NBinOp(NBinOperator::Mul, left, right),
     )(s)
 }
 
@@ -244,9 +254,35 @@ fn prefix_div(s: &str) -> ReadResult<Expr> {
 }
 
 fn infix_div(s: &str) -> ReadResult<Expr> {
-    map(infix(alt((tag("divided by"), tag("over"))), value, value), |(left, right)|
-        Expr::NBinOp(NBinOperator::Div, left, right),
+    map(
+        infix(alt((tag("divided by"), tag("over"))), value, value),
+        |(left, right)| Expr::NBinOp(NBinOperator::Div, left, right),
     )(s)
+}
+
+fn and(s: &str) -> ReadResult<Expr> {
+    map(infix(tag("and"), value, value), |(left, right)| {
+        Expr::BBinOp(BBinOperator::And, left, right)
+    })(s)
+}
+
+fn or(s: &str) -> ReadResult<Expr> {
+    map(infix(tag("or"), value, value), |(left, right)| {
+        Expr::BBinOp(BBinOperator::Or, left, right)
+    })(s)
+}
+
+fn xor(s: &str) -> ReadResult<Expr> {
+    map(
+        prefix(tag("either"), tag("or"), value, value),
+        |(left, right)| Expr::BBinOp(BBinOperator::EitherOr, left, right),
+    )(s)
+}
+
+fn not(s: &str) -> ReadResult<Expr> {
+    map(preceded(terminated(tag("not"), whitespace0), value), |b| {
+        Expr::Not(b)
+    })(s)
 }
 
 fn boolean(s: &str) -> ReadResult<Literal> {
@@ -254,11 +290,17 @@ fn boolean(s: &str) -> ReadResult<Literal> {
 }
 
 fn true_(s: &str) -> ReadResult<Literal> {
-    map(alt((tag("correct"), tag("right"), tag("true"), tag("yes"))), |_| Literal::Boolean(true))(s)
+    map(
+        alt((tag("correct"), tag("right"), tag("true"), tag("yes"))),
+        |_| Literal::Boolean(true),
+    )(s)
 }
 
 fn false_(s: &str) -> ReadResult<Literal> {
-    map(alt((tag("false"), tag("incorrect"), tag("no"), tag("wrong"))), |_| Literal::Boolean(false))(s)
+    map(
+        alt((tag("false"), tag("incorrect"), tag("no"), tag("wrong"))),
+        |_| Literal::Boolean(false),
+    )(s)
 }
 
 fn string(s: &str) -> ReadResult<Literal> {
@@ -574,6 +616,59 @@ fn parses_div() {
                 Value::Lit(Literal::Number(1f64)),
             )
         ))
+    );
+}
+
+#[test]
+fn parses_and() {
+    assert_eq!(
+        and("true and false"),
+        Ok((
+            "",
+            Expr::BBinOp(
+                BBinOperator::And,
+                Value::Lit(Literal::Boolean(true)),
+                Value::Lit(Literal::Boolean(false)),
+            )
+        ))
+    );
+}
+
+#[test]
+fn parses_or() {
+    assert_eq!(
+        or("true or false"),
+        Ok((
+            "",
+            Expr::BBinOp(
+                BBinOperator::Or,
+                Value::Lit(Literal::Boolean(true)),
+                Value::Lit(Literal::Boolean(false)),
+            )
+        ))
+    );
+}
+
+#[test]
+fn parses_xor() {
+    assert_eq!(
+        xor("either true or false"),
+        Ok((
+            "",
+            Expr::BBinOp(
+                BBinOperator::EitherOr,
+                Value::Lit(Literal::Boolean(true)),
+                Value::Lit(Literal::Boolean(false)),
+            )
+        ))
+    );
+}
+
+#[test]
+fn parses_not() {
+    assert_eq!(
+        not("not true"),
+        Ok(("", Expr::Not(Value::Lit(Literal::Boolean(true)))))
     );
 }
 

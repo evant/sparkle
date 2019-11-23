@@ -24,6 +24,8 @@ pub enum Literal<'a> {
 #[derive(Debug, PartialEq)]
 pub enum Expr<'a> {
     NBinOp(NBinOperator, Value<'a>, Value<'a>),
+    BBinOp(BBinOperator, Value<'a>, Value<'a>),
+    Not(Value<'a>),
     Val(Value<'a>),
 }
 
@@ -33,6 +35,13 @@ pub enum NBinOperator {
     Sub,
     Mul,
     Div,
+}
+
+#[derive(Debug, PartialEq)]
+pub enum BBinOperator {
+    And,
+    Or,
+    EitherOr,
 }
 
 #[derive(Debug, PartialEq)]
