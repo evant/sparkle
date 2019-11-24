@@ -1,4 +1,5 @@
 use std::fs::File;
+use std::hint::unreachable_unchecked;
 use std::mem;
 use std::str::FromStr;
 
@@ -13,7 +14,8 @@ use target_lexicon::Triple;
 
 use crate::error::ReportError;
 use crate::pst;
-use crate::pst::{BBinOperator, Expr, Literal, NBinOperator, Paragraph, Report};
+use crate::pst::{BinOperator, Expr, Literal, Paragraph, Report};
+use crate::types::Type::{Number, Boolean};
 
 pub fn send_out<'a>(report: &'a Report, name: &str, target: &str) -> Result<(), ReportError> {
     let mut sender = faerie_sender(name, target)?;
@@ -188,67 +190,64 @@ fn send_expression<'a, B: Backend>(
     builder: &mut FunctionBuilder,
 ) -> Result<(crate::types::Type, Value), ReportError> {
     let result = match expr {
-        Expr::NBinOp(op, left, right) => {
-            let (left_type, left_value) = send_value(left, sender, builder)?;
-            let (right_type, right_value) = send_value(right, sender, builder)?;
+        Expr::BinOp(op, left, right) => {
+            let (left_type, left_value) = send_expression(left, sender, builder)?;
+            let (right_type, right_value) = send_expression(right, sender, builder)?;
 
-            type_check(crate::types::Type::Number, left_type)?;
-            type_check(crate::types::Type::Number, right_type)?;
-
-            (
-                crate::types::Type::Number,
-                match op {
-                    NBinOperator::Add => builder.ins().fadd(left_value, right_value),
-                    NBinOperator::Sub => builder.ins().fsub(left_value, right_value),
-                    NBinOperator::Mul => builder.ins().fmul(left_value, right_value),
-                    NBinOperator::Div => builder.ins().fdiv(left_value, right_value),
-                },
-            )
-        }
-        Expr::BBinOp(op, left, right) => {
-            let (left_type, left_value) = send_value(left, sender, builder)?;
-            let (right_type, right_value) = send_value(right, sender, builder)?;
-
-            type_check(crate::types::Type::Boolean, left_type)?;
-            type_check(crate::types::Type::Boolean, right_type)?;
-
-            (
-                crate::types::Type::Boolean,
-                match op {
-                    BBinOperator::And => builder.ins().band(left_value, right_value),
-                    BBinOperator::Or => builder.ins().bor(left_value, right_value),
-                    BBinOperator::EitherOr => builder.ins().bxor(left_value, right_value),
-                },
-            )
+            match op {
+                BinOperator::AddOrAnd => {
+                    if left_type.is_number() {
+                        // assume add
+                        Number.check_bin(left_type, right_type, || {
+                            builder.ins().fadd(left_value, right_value)
+                        })
+                    } else {
+                        // assume and
+                        Boolean.check_bin(left_type, right_type, || {
+                            builder.ins().band(left_value, right_value)
+                        })
+                    }
+                }
+                BinOperator::Sub => {
+                    Number.check_bin(left_type, right_type, || {
+                        builder.ins().fsub(left_value, right_value)
+                    })
+                }
+                BinOperator::Mul => {
+                    Number.check_bin(left_type, right_type, || {
+                        builder.ins().fmul(left_value, right_value)
+                    })
+                }
+                BinOperator::Div => {
+                    Number.check_bin(left_type, right_type, || {
+                        builder.ins().fdiv(left_value, right_value)
+                    })
+                }
+                BinOperator::Or => {
+                    Boolean.check_bin(left_type, right_type, || {
+                        builder.ins().bor(left_value, right_value)
+                    })
+                }
+                BinOperator::EitherOr => {
+                    Boolean.check_bin(left_type, right_type, || {
+                        builder.ins().bxor(left_value, right_value)
+                    })
+                }
+            }?
         }
         Expr::Not(val) => {
             let (type_, value) = send_value(val, sender, builder)?;
 
-            type_check(crate::types::Type::Boolean, type_)?;
-
-            // bnot doesn't currently support b1 https://github.com/bytecodealliance/cranelift/issues/922
-            let int = builder.ins().bint(types::I32, value);
-            let not = builder.ins().icmp_imm(IntCC::Equal, int, 0);
-            (crate::types::Type::Boolean, not)
+            Boolean.check(type_, || {
+                // bnot doesn't currently support b1 https://github.com/bytecodealliance/cranelift/issues/922
+                let int = builder.ins().bint(types::I32, value);
+                builder.ins().icmp_imm(IntCC::Equal, int, 0)
+            })?
         }
         Expr::Val(val) => send_value(val, sender, builder)?,
     };
 
     Ok(result)
-}
-
-fn type_check(
-    expected_type: crate::types::Type,
-    actual_type: crate::types::Type,
-) -> Result<(), ReportError> {
-    if expected_type == actual_type {
-        Ok(())
-    } else {
-        Err(ReportError::TypeError(format!(
-            "expected {} but got {}",
-            expected_type, actual_type
-        )))
-    }
 }
 
 fn send_value<'a, B: Backend>(

@@ -45,7 +45,8 @@ fn math() -> TestResult {
          4\n\
          5\n\
          6\n\
-         5.5\n",
+         5.5\n\
+         6\n",
     );
 
     Ok(())
@@ -64,7 +65,8 @@ fn logic() -> TestResult {
          no\n\
          yes\n\
          no\n\
-         no\n",
+         no\n\
+         yes\n",
     );
 
     Ok(())

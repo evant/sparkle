@@ -14,37 +14,31 @@ pub struct Report<'a> {
     pub writer: &'a str,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub enum Literal<'a> {
     String(&'a str),
     Number(f64),
     Boolean(bool),
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub enum Expr<'a> {
-    NBinOp(NBinOperator, Value<'a>, Value<'a>),
-    BBinOp(BBinOperator, Value<'a>, Value<'a>),
+    BinOp(BinOperator, Box<Expr<'a>>, Box<Expr<'a>>),
     Not(Value<'a>),
     Val(Value<'a>),
 }
 
-#[derive(Debug, PartialEq)]
-pub enum NBinOperator {
-    Add,
+#[derive(Debug, PartialEq, Clone)]
+pub enum BinOperator {
+    AddOrAnd,
     Sub,
     Mul,
     Div,
-}
-
-#[derive(Debug, PartialEq)]
-pub enum BBinOperator {
-    And,
     Or,
     EitherOr,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub enum Value<'a> {
     Lit(Literal<'a>),
 }

@@ -3,14 +3,13 @@ use nom::bytes::complete::{is_a, is_not, tag, take_till1, take_while};
 use nom::character::complete::space1;
 use nom::combinator::{complete, map, opt, recognize};
 use nom::error::{convert_error, ParseError, VerboseError};
-use nom::multi::{many0, many1, separated_list};
+use nom::multi::{fold_many0, many0, many1, separated_list};
 use nom::number::complete::double;
-use nom::sequence::{delimited, preceded, separated_pair, terminated, tuple};
-use nom::IResult;
+use nom::sequence::{delimited, pair, preceded, separated_pair, terminated, tuple};
+use nom::{dbg_dmp, IResult};
 
 use crate::error::ReportError;
-use crate::pst::Expr::NBinOp;
-use crate::pst::{BBinOperator, Expr, Literal, NBinOperator, Paragraph, Report, Value};
+use crate::pst::{BinOperator, Expr, Literal, Paragraph, Report, Value};
 
 type ReadResult<'a, O> = IResult<&'a str, O, VerboseError<&'a str>>;
 
@@ -58,6 +57,13 @@ fn identifier(s: &str) -> ReadResult<&str> {
 
 fn word(s: &str) -> ReadResult<&str> {
     recognize(many1(not_space_or_punctuation))(s)
+}
+
+fn whitespace_delim<'a, O, P>(parser: P) -> impl Fn(&'a str) -> ReadResult<O>
+where
+    P: Fn(&'a str) -> ReadResult<O>,
+{
+    delimited(whitespace0, parser, whitespace0)
 }
 
 fn whitespace0(s: &str) -> ReadResult<&str> {
@@ -131,11 +137,11 @@ fn statement(s: &str) -> ReadResult<Expr> {
 }
 
 fn expr(s: &str) -> ReadResult<Expr> {
-    alt((and, or, xor, not, add, sub, mul, div, value_expr))(s)
+    alt((prefix_term, infix_term, value_expr))(s)
 }
 
 fn value_expr(s: &str) -> ReadResult<Expr> {
-    map(value, Expr::Val)(s)
+    alt((not, map(value, Expr::Val)))(s)
 }
 
 fn literal(s: &str) -> ReadResult<Literal> {
@@ -146,136 +152,149 @@ fn value(s: &str) -> ReadResult<Value> {
     map(literal, Value::Lit)(s)
 }
 
-fn prefix<'a, O1, O2, P1, P2, V1, V2>(
+fn prefix<'a, O1, O2, O3, P1, P2, V1, V2>(
     op1: P1,
     op2: P2,
     first: V1,
     second: V2,
-) -> impl Fn(&'a str) -> ReadResult<(O2, O2)>
+) -> impl Fn(&'a str) -> ReadResult<(O2, O3)>
 where
     P1: Fn(&'a str) -> ReadResult<O1>,
     P2: Fn(&'a str) -> ReadResult<O1>,
     V1: Fn(&'a str) -> ReadResult<O2>,
-    V2: Fn(&'a str) -> ReadResult<O2>,
+    V2: Fn(&'a str) -> ReadResult<O3>,
 {
     preceded(
         terminated(op1, whitespace0),
-        separated_pair(first, delimited(whitespace0, op2, whitespace0), second),
+        separated_pair(first, whitespace_delim(op2), second),
     )
 }
 
-fn infix<'a, O1, O2, P, V1, V2>(
+fn infix<'a, O1, O2, O3, P, V1, V2>(
     operator: P,
     left: V1,
     right: V2,
-) -> impl Fn(&'a str) -> ReadResult<(O2, O2)>
+) -> impl Fn(&'a str) -> ReadResult<(O2, O3)>
 where
     P: Fn(&'a str) -> ReadResult<O1>,
     V1: Fn(&'a str) -> ReadResult<O2>,
-    V2: Fn(&'a str) -> ReadResult<O2>,
+    V2: Fn(&'a str) -> ReadResult<O3>,
 {
     let infix_delim = delimited(whitespace0, operator, whitespace0);
     separated_pair(left, infix_delim, right)
 }
 
-fn add(s: &str) -> ReadResult<Expr> {
-    alt((prefix_add, infix_add))(s)
+fn infix_term(s: &str) -> ReadResult<Expr> {
+    let (s, init) = value_expr(s)?;
+    fold_many0(pair(infix_op, value_expr), init, |acc, (op, val)| {
+        Expr::BinOp(op, Box::new(acc), Box::new(val))
+    })(s)
+}
+
+fn prefix_term(s: &str) -> ReadResult<Expr> {
+    alt((prefix_add, prefix_sub, prefix_mul, prefix_div, prefix_xor))(s)
+}
+
+fn infix_op(s: &str) -> ReadResult<BinOperator> {
+    alt((
+        infix_add_op,
+        infix_sub_op,
+        infix_mul_op,
+        infix_div_op,
+        infix_and_op,
+        infix_or_op,
+    ))(s)
+}
+
+fn infix_add_op(s: &str) -> ReadResult<BinOperator> {
+    map(
+        whitespace_delim(alt((tag("added to"), tag("plus"), tag("and")))),
+        |_| BinOperator::AddOrAnd,
+    )(s)
+}
+
+fn infix_sub_op(s: &str) -> ReadResult<BinOperator> {
+    map(
+        whitespace_delim(alt((tag("minus"), tag("without")))),
+        |_| BinOperator::Sub,
+    )(s)
+}
+
+fn infix_mul_op(s: &str) -> ReadResult<BinOperator> {
+    map(
+        whitespace_delim(alt((tag("multiplied with"), tag("times")))),
+        |_| BinOperator::Mul,
+    )(s)
+}
+
+fn infix_div_op(s: &str) -> ReadResult<BinOperator> {
+    map(
+        whitespace_delim(alt((tag("divided by"), tag("over")))),
+        |_| BinOperator::Div,
+    )(s)
 }
 
 fn prefix_add(s: &str) -> ReadResult<Expr> {
     map(
-        prefix(tag("add"), tag("and"), value, value),
-        |(left, right)| Expr::NBinOp(NBinOperator::Add, left, right),
+        prefix(tag("add"), tag("and"), value_expr, value_expr),
+        |(left, right)| Expr::BinOp(BinOperator::AddOrAnd, Box::new(left), Box::new(right)),
     )(s)
-}
-
-fn infix_add(s: &str) -> ReadResult<Expr> {
-    map(
-        infix(
-            alt((tag("added to"), tag("plus"), tag("and"))),
-            value,
-            value,
-        ),
-        |(left, right)| Expr::NBinOp(NBinOperator::Add, left, right),
-    )(s)
-}
-
-fn sub(s: &str) -> ReadResult<Expr> {
-    alt((prefix_sub, infix_sub))(s)
 }
 
 fn prefix_sub(s: &str) -> ReadResult<Expr> {
     map(
         alt((
-            prefix(tag("the difference between"), tag("and"), value, value),
-            prefix(tag("subtract"), tag("from"), value, value),
+            prefix(
+                tag("the difference between"),
+                tag("and"),
+                value_expr,
+                value_expr,
+            ),
+            prefix(tag("subtract"), tag("from"), value_expr, value_expr),
         )),
-        |(left, right)| Expr::NBinOp(NBinOperator::Sub, left, right),
+        |(left, right)| Expr::BinOp(BinOperator::Sub, Box::new(left), Box::new(right)),
     )(s)
-}
-
-fn infix_sub(s: &str) -> ReadResult<Expr> {
-    map(
-        infix(alt((tag("minus"), tag("without"))), value, value),
-        |(left, right)| Expr::NBinOp(NBinOperator::Sub, left, right),
-    )(s)
-}
-
-fn mul(s: &str) -> ReadResult<Expr> {
-    alt((prefix_mul, infix_mul))(s)
 }
 
 fn prefix_mul(s: &str) -> ReadResult<Expr> {
     map(
         alt((
-            prefix(tag("multiply"), alt((tag("by"), tag("and"))), value, value),
-            prefix(tag("the product of"), tag("and"), value, value),
+            prefix(
+                tag("multiply"),
+                alt((tag("by"), tag("and"))),
+                value_expr,
+                value_expr,
+            ),
+            prefix(tag("the product of"), tag("and"), value_expr, value_expr),
         )),
-        |(left, right)| Expr::NBinOp(NBinOperator::Mul, left, right),
+        |(left, right)| Expr::BinOp(BinOperator::Mul, Box::new(left), Box::new(right)),
     )(s)
-}
-
-fn infix_mul(s: &str) -> ReadResult<Expr> {
-    map(
-        infix(alt((tag("multiplied with"), tag("times"))), value, value),
-        |(left, right)| Expr::NBinOp(NBinOperator::Mul, left, right),
-    )(s)
-}
-
-fn div(s: &str) -> ReadResult<Expr> {
-    alt((prefix_div, infix_div))(s)
 }
 
 fn prefix_div(s: &str) -> ReadResult<Expr> {
     map(
-        prefix(tag("divide"), alt((tag("by"), tag("and"))), value, value),
-        |(left, right)| Expr::NBinOp(NBinOperator::Div, left, right),
+        prefix(
+            tag("divide"),
+            alt((tag("by"), tag("and"))),
+            value_expr,
+            value_expr,
+        ),
+        |(left, right)| Expr::BinOp(BinOperator::Div, Box::new(left), Box::new(right)),
     )(s)
 }
 
-fn infix_div(s: &str) -> ReadResult<Expr> {
+fn infix_and_op(s: &str) -> ReadResult<BinOperator> {
+    map(whitespace_delim(tag("and")), |_| BinOperator::AddOrAnd)(s)
+}
+
+fn infix_or_op(s: &str) -> ReadResult<BinOperator> {
+    map(whitespace_delim(tag("or")), |_| BinOperator::Or)(s)
+}
+
+fn prefix_xor(s: &str) -> ReadResult<Expr> {
     map(
-        infix(alt((tag("divided by"), tag("over"))), value, value),
-        |(left, right)| Expr::NBinOp(NBinOperator::Div, left, right),
-    )(s)
-}
-
-fn and(s: &str) -> ReadResult<Expr> {
-    map(infix(tag("and"), value, value), |(left, right)| {
-        Expr::BBinOp(BBinOperator::And, left, right)
-    })(s)
-}
-
-fn or(s: &str) -> ReadResult<Expr> {
-    map(infix(tag("or"), value, value), |(left, right)| {
-        Expr::BBinOp(BBinOperator::Or, left, right)
-    })(s)
-}
-
-fn xor(s: &str) -> ReadResult<Expr> {
-    map(
-        prefix(tag("either"), tag("or"), value, value),
-        |(left, right)| Expr::BBinOp(BBinOperator::EitherOr, left, right),
+        prefix(tag("either"), tag("or"), value_expr, value_expr),
+        |(left, right)| Expr::BinOp(BinOperator::EitherOr, Box::new(left), Box::new(right)),
     )(s)
 }
 
@@ -448,10 +467,10 @@ fn parses_paragraph() {
                 closing_name: "how to fly",
                 statements: vec![
                     Expr::Val(Value::Lit(Literal::String("Fly1!"))),
-                    Expr::NBinOp(
-                        NBinOperator::Add,
-                        Value::Lit(Literal::Number(5f64)),
-                        Value::Lit(Literal::Number(6f64)),
+                    Expr::BinOp(
+                        BinOperator::AddOrAnd,
+                        Box::new(Expr::Val(Value::Lit(Literal::Number(5f64)))),
+                        Box::new(Expr::Val(Value::Lit(Literal::Number(6f64)))),
                     ),
                     Expr::Val(Value::Lit(Literal::Boolean(true))),
                 ],
@@ -516,149 +535,128 @@ fn parses_literal() {
 }
 
 #[test]
-fn parses_add() {
+fn parses_infix_op() {
+    assert_eq!(infix_op(" added to "), Ok(("", BinOperator::AddOrAnd)));
+    assert_eq!(infix_op(" minus "), Ok(("", BinOperator::Sub)));
+    assert_eq!(infix_op(" multiplied with "), Ok(("", BinOperator::Mul)));
+    assert_eq!(infix_op(" divided by "), Ok(("", BinOperator::Div)));
+    assert_eq!(infix_op(" or "), Ok(("", BinOperator::Or)));
+}
+
+#[test]
+fn parses_infix_term() {
     assert_eq!(
-        add("1 added to 2"),
+        infix_term("1"),
+        Ok(("", Expr::Val(Value::Lit(Literal::Number(1f64)))))
+    );
+    assert_eq!(
+        infix_term("1 added to 2"),
         Ok((
             "",
-            Expr::NBinOp(
-                NBinOperator::Add,
-                Value::Lit(Literal::Number(1f64)),
-                Value::Lit(Literal::Number(2f64)),
+            Expr::BinOp(
+                BinOperator::AddOrAnd,
+                Box::new(Expr::Val(Value::Lit(Literal::Number(1f64)))),
+                Box::new(Expr::Val(Value::Lit(Literal::Number(2f64)))),
             )
         ))
     );
     assert_eq!(
-        add("add 1 and 2"),
+        infix_term("2 plus 1 times 3"),
         Ok((
             "",
-            Expr::NBinOp(
-                NBinOperator::Add,
-                Value::Lit(Literal::Number(1f64)),
-                Value::Lit(Literal::Number(2f64)),
+            Expr::BinOp(
+                BinOperator::Mul,
+                Box::new(Expr::BinOp(
+                    BinOperator::AddOrAnd,
+                    Box::new(Expr::Val(Value::Lit(Literal::Number(2f64)))),
+                    Box::new(Expr::Val(Value::Lit(Literal::Number(1f64))))
+                )),
+                Box::new(Expr::Val(Value::Lit(Literal::Number(3f64)))),
+            )
+        ))
+    );
+    assert_eq!(
+        infix_term("true and false"),
+        Ok((
+            "",
+            Expr::BinOp(
+                BinOperator::AddOrAnd,
+                Box::new(Expr::Val(Value::Lit(Literal::Boolean(true)))),
+                Box::new(Expr::Val(Value::Lit(Literal::Boolean(false)))),
+            )
+        ))
+    );
+    assert_eq!(
+        infix_term("true or false and false"),
+        Ok((
+            "",
+            Expr::BinOp(
+                BinOperator::AddOrAnd,
+                Box::new(Expr::BinOp(
+                    BinOperator::Or,
+                    Box::new(Expr::Val(Value::Lit(Literal::Boolean(true)))),
+                    Box::new(Expr::Val(Value::Lit(Literal::Boolean(false))))
+                )),
+                Box::new(Expr::Val(Value::Lit(Literal::Boolean(false)))),
             )
         ))
     );
 }
 
 #[test]
-fn parses_sub() {
+fn parses_prefix_term() {
     assert_eq!(
-        sub("2 minus 1"),
+        prefix_term("add 1 and 2"),
         Ok((
             "",
-            Expr::NBinOp(
-                NBinOperator::Sub,
-                Value::Lit(Literal::Number(2f64)),
-                Value::Lit(Literal::Number(1f64)),
+            Expr::BinOp(
+                BinOperator::AddOrAnd,
+                Box::new(Expr::Val(Value::Lit(Literal::Number(1f64)))),
+                Box::new(Expr::Val(Value::Lit(Literal::Number(2f64)))),
             )
         ))
     );
     assert_eq!(
-        sub("the difference between 2 and 1"),
+        prefix_term("the difference between 2 and 1"),
         Ok((
             "",
-            Expr::NBinOp(
-                NBinOperator::Sub,
-                Value::Lit(Literal::Number(2f64)),
-                Value::Lit(Literal::Number(1f64)),
-            )
-        ))
-    );
-}
-
-#[test]
-fn parses_mul() {
-    assert_eq!(
-        mul("2 multiplied with 1"),
-        Ok((
-            "",
-            Expr::NBinOp(
-                NBinOperator::Mul,
-                Value::Lit(Literal::Number(2f64)),
-                Value::Lit(Literal::Number(1f64)),
+            Expr::BinOp(
+                BinOperator::Sub,
+                Box::new(Expr::Val(Value::Lit(Literal::Number(2f64)))),
+                Box::new(Expr::Val(Value::Lit(Literal::Number(1f64)))),
             )
         ))
     );
     assert_eq!(
-        mul("the product of 2 and 1"),
+        prefix_term("the product of 2 and 1"),
         Ok((
             "",
-            Expr::NBinOp(
-                NBinOperator::Mul,
-                Value::Lit(Literal::Number(2f64)),
-                Value::Lit(Literal::Number(1f64)),
-            )
-        ))
-    );
-}
-
-#[test]
-fn parses_div() {
-    assert_eq!(
-        div("2 divided by 1"),
-        Ok((
-            "",
-            Expr::NBinOp(
-                NBinOperator::Div,
-                Value::Lit(Literal::Number(2f64)),
-                Value::Lit(Literal::Number(1f64)),
+            Expr::BinOp(
+                BinOperator::Mul,
+                Box::new(Expr::Val(Value::Lit(Literal::Number(2f64)))),
+                Box::new(Expr::Val(Value::Lit(Literal::Number(1f64)))),
             )
         ))
     );
     assert_eq!(
-        div("divide 2 by 1"),
+        prefix_term("divide 2 by 1"),
         Ok((
             "",
-            Expr::NBinOp(
-                NBinOperator::Div,
-                Value::Lit(Literal::Number(2f64)),
-                Value::Lit(Literal::Number(1f64)),
+            Expr::BinOp(
+                BinOperator::Div,
+                Box::new(Expr::Val(Value::Lit(Literal::Number(2f64)))),
+                Box::new(Expr::Val(Value::Lit(Literal::Number(1f64)))),
             )
         ))
     );
-}
-
-#[test]
-fn parses_and() {
     assert_eq!(
-        and("true and false"),
+        expr("either true or false"),
         Ok((
             "",
-            Expr::BBinOp(
-                BBinOperator::And,
-                Value::Lit(Literal::Boolean(true)),
-                Value::Lit(Literal::Boolean(false)),
-            )
-        ))
-    );
-}
-
-#[test]
-fn parses_or() {
-    assert_eq!(
-        or("true or false"),
-        Ok((
-            "",
-            Expr::BBinOp(
-                BBinOperator::Or,
-                Value::Lit(Literal::Boolean(true)),
-                Value::Lit(Literal::Boolean(false)),
-            )
-        ))
-    );
-}
-
-#[test]
-fn parses_xor() {
-    assert_eq!(
-        xor("either true or false"),
-        Ok((
-            "",
-            Expr::BBinOp(
-                BBinOperator::EitherOr,
-                Value::Lit(Literal::Boolean(true)),
-                Value::Lit(Literal::Boolean(false)),
+            Expr::BinOp(
+                BinOperator::EitherOr,
+                Box::new(Expr::Val(Value::Lit(Literal::Boolean(true)))),
+                Box::new(Expr::Val(Value::Lit(Literal::Boolean(false)))),
             )
         ))
     );
@@ -670,6 +668,17 @@ fn parses_not() {
         not("not true"),
         Ok(("", Expr::Not(Value::Lit(Literal::Boolean(true)))))
     );
+    assert_eq!(
+        expr("not true and false"),
+        Ok((
+            "",
+            Expr::BinOp(
+                BinOperator::AddOrAnd,
+                Box::new(Expr::Not(Value::Lit(Literal::Boolean(true)))),
+                Box::new(Expr::Val(Value::Lit(Literal::Boolean(false))))
+            )
+        ))
+    );
 }
 
 #[test]
@@ -678,10 +687,29 @@ fn parses_statement() {
         statement("I wrote 1 added to 2."),
         Ok((
             "",
-            Expr::NBinOp(
-                NBinOperator::Add,
-                Value::Lit(Literal::Number(1f64)),
-                Value::Lit(Literal::Number(2f64)),
+            Expr::BinOp(
+                BinOperator::AddOrAnd,
+                Box::new(Expr::Val(Value::Lit(Literal::Number(1f64)))),
+                Box::new(Expr::Val(Value::Lit(Literal::Number(2f64)))),
+            )
+        ))
+    );
+}
+
+#[test]
+fn parses_multiple_boolean_operators() {
+    assert_eq!(
+        expr("true and false or true"),
+        Ok((
+            "",
+            Expr::BinOp(
+                BinOperator::Or,
+                Box::new(Expr::BinOp(
+                    BinOperator::AddOrAnd,
+                    Box::new(Expr::Val(Value::Lit(Literal::Boolean(true)))),
+                    Box::new(Expr::Val(Value::Lit(Literal::Boolean(false)))),
+                )),
+                Box::new(Expr::Val(Value::Lit(Literal::Boolean(true)))),
             )
         ))
     );
