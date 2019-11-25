@@ -28,6 +28,7 @@ pub fn read(report_text: &str) -> Result<Report, ReportError> {
 
 fn keyword(s: &str) -> ReadResult<&str> {
     alt((
+        keyword_declare,
         keyword_assign,
         keyword_infix_add,
         keyword_infix_sub,
@@ -140,7 +141,10 @@ fn paragraph_declaration(s: &str) -> ReadResult<&str> {
 
 fn statement(s: &str) -> ReadResult<Statement> {
     terminated(
-        terminated(alt((print_statement, declare_statement)), punctuation),
+        terminated(
+            alt((print_statement, declare_statement, assign_statement)),
+            punctuation,
+        ),
         whitespace0,
     )(s)
 }
@@ -156,11 +160,18 @@ fn declare_statement(s: &str) -> ReadResult<Statement> {
         preceded(
             preceded(tag("Did you know that"), whitespace0),
             tuple((
-                separated_pair(identifier, whitespace_delim(keyword_assign), declare_type),
+                separated_pair(identifier, whitespace_delim(keyword_declare), declare_type),
                 opt(whitespace_delim(literal)),
             )),
         ),
         |((name, type_), lit)| Statement::Declare(Variable(name), type_, lit),
+    )(s)
+}
+
+fn assign_statement(s: &str) -> ReadResult<Statement> {
+    map(
+        separated_pair(var, whitespace_delim(keyword_assign), expr),
+        |(var, expr)| Statement::Assign(var, expr),
     )(s)
 }
 
@@ -207,7 +218,7 @@ fn type_boolean(s: &str) -> ReadResult<Type> {
     )(s)
 }
 
-fn keyword_assign(s: &str) -> ReadResult<&str> {
+fn keyword_declare(s: &str) -> ReadResult<&str> {
     alt((
         tag("is"),
         tag("was"),
@@ -216,6 +227,23 @@ fn keyword_assign(s: &str) -> ReadResult<&str> {
         tag("like"),
         tag("likes"),
         tag("liked"),
+    ))(s)
+}
+
+fn keyword_assign(s: &str) -> ReadResult<&str> {
+    alt((
+        recognize(separated_pair(
+            alt((tag("is"), tag("are"))),
+            whitespace0,
+            tag("now"),
+        )),
+        recognize(separated_pair(
+            tag("now"),
+            whitespace0,
+            alt((tag("like"), tag("likes"))),
+        )),
+        tag("become"),
+        tag("becomes"),
     ))(s)
 }
 
@@ -839,6 +867,34 @@ fn parses_declare_statement() {
                 Variable("Pinkie Pie"),
                 Boolean,
                 Some(Literal::Boolean(true))
+            )
+        ))
+    );
+}
+
+#[test]
+fn parses_assign_statement() {
+    assert_eq!(
+        statement("Spike's age is now 11!"),
+        Ok((
+            "",
+            Statement::Assign(
+                Variable("Spike's age"),
+                Expr::Val(Value::Lit(Literal::Number(11f64)))
+            )
+        ))
+    );
+    assert_eq!(
+        statement("Spike's age is now 10 plus 1!"),
+        Ok((
+            "",
+            Statement::Assign(
+                Variable("Spike's age"),
+                Expr::BinOp(
+                    BinOperator::AddOrAnd,
+                    Box::new(Expr::Val(Value::Lit(Literal::Number(10f64)))),
+                    Box::new(Expr::Val(Value::Lit(Literal::Number(1f64))))
+                )
             )
         ))
     );

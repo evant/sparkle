@@ -80,6 +80,7 @@ fn variables() -> TestResult {
 
     cmd.assert().success().stdout(
         "0\n\
+         6\n\
          Tallulah\n\
          yes\n",
     );

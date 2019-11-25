@@ -151,6 +151,7 @@ fn send_statement<'a, B: Backend>(
         Statement::Declare(var, type_, lit) => {
             send_declare_statement(var, *type_, lit, sender, function_sender)
         }
+        Statement::Assign(var, expr) => send_assign_statement(var, expr, sender, function_sender),
     }
 }
 
@@ -258,6 +259,25 @@ fn send_declare_statement<'a, B: Backend>(
     Ok(())
 }
 
+fn send_assign_statement<'a, B: Backend>(
+    var: &pst::Variable<'a>,
+    expr: &Expr<'a>,
+    sender: &mut Sender<B>,
+    function_sender: &mut FunctionSender<'a>,
+) -> Result<(), ReportError> {
+    let (expr_type, expr_value) = send_expression(expr, sender, function_sender)?;
+    let (var_type, slot) = function_sender.vars[var];
+
+    var_type.check(expr_type, || {
+        function_sender
+            .builder
+            .ins()
+            .stack_store(expr_value, slot, 0)
+    })?;
+
+    Ok(())
+}
+
 fn send_expression<'a, B: Backend>(
     expr: &Expr<'a>,
     sender: &mut Sender<B>,
@@ -303,7 +323,10 @@ fn send_expression<'a, B: Backend>(
             let (type_, value) = send_value(val, sender, function_sender)?;
 
             Boolean.check(type_, || {
-                let b = function_sender.builder.ins().icmp_imm(IntCC::Equal, value, 0);
+                let b = function_sender
+                    .builder
+                    .ins()
+                    .icmp_imm(IntCC::Equal, value, 0);
                 function_sender.builder.ins().bint(types::I32, b)
             })?
         }
