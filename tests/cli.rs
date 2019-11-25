@@ -73,6 +73,17 @@ fn logic() -> TestResult {
 }
 
 #[test]
+fn variables() -> TestResult {
+    let mut cmd = Command::cargo_bin("fimpp")?;
+
+    cmd.arg("gallop").arg("examples/variables.fpp");
+
+    cmd.assert().success().stdout("0\n");
+
+    Ok(())
+}
+
+#[test]
 fn sends_hello_canterlot() -> TestResult {
     let mut cmd = Command::cargo_bin("fimpp")?;
 

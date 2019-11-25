@@ -14,8 +14,10 @@ use target_lexicon::Triple;
 
 use crate::error::ReportError;
 use crate::pst;
-use crate::pst::{BinOperator, Expr, Literal, Paragraph, Report};
-use crate::types::Type::{Number, Boolean};
+use crate::pst::{BinOperator, Expr, Literal, Paragraph, Report, Statement, Variable};
+use crate::types::Type::{Boolean, Chars, Number};
+use cranelift::codegen::ir::StackSlot;
+use std::collections::HashMap;
 
 pub fn send_out<'a>(report: &'a Report, name: &str, target: &str) -> Result<(), ReportError> {
     let mut sender = faerie_sender(name, target)?;
@@ -95,25 +97,29 @@ fn send<'a, B: Backend>(
     context.func.signature.returns.push(AbiParam::new(int));
 
     let mut builder = FunctionBuilder::new(&mut context.func, &mut builder_context);
-    let entry_ebb = builder.create_ebb();
-    builder.append_ebb_params_for_function_params(entry_ebb);
-    builder.switch_to_block(entry_ebb);
-    builder.seal_block(entry_ebb);
+    let mut function_sender = FunctionSender::new(builder);
+
+    let entry_ebb = function_sender.builder.create_ebb();
+    function_sender
+        .builder
+        .append_ebb_params_for_function_params(entry_ebb);
+    function_sender.builder.switch_to_block(entry_ebb);
+    function_sender.builder.seal_block(entry_ebb);
 
     // constant strings for printing booleans
     create_constant_string("yes", sender)?;
     create_constant_string("no", sender)?;
 
     if !report.paragraphs.is_empty() {
-        send_paragraph(&report.paragraphs[0], sender, &mut builder)?;
+        send_paragraph(&report.paragraphs[0], sender, &mut function_sender)?;
     }
 
-    let zero = builder.ins().iconst(int, 0);
-    let var = Variable::new(0);
-    builder.declare_var(var, int);
-    builder.def_var(var, zero);
-    let return_value = builder.use_var(var);
-    builder.ins().return_(&[return_value]);
+    let zero = function_sender.builder.ins().iconst(int, 0);
+    let var = cranelift::prelude::Variable::new(0);
+    function_sender.builder.declare_var(var, int);
+    function_sender.builder.def_var(var, zero);
+    let return_value = function_sender.builder.use_var(var);
+    function_sender.builder.ins().return_(&[return_value]);
 
     let id = sender
         .module
@@ -126,49 +132,62 @@ fn send<'a, B: Backend>(
 fn send_paragraph<'a, B: Backend>(
     paragraph: &'a Paragraph,
     sender: &mut Sender<B>,
-    builder: &mut FunctionBuilder,
+    function_sender: &mut FunctionSender<'a>,
 ) -> Result<(), ReportError> {
     for statement in paragraph.statements.iter() {
-        send_statement(statement, sender, builder)?;
+        send_statement(statement, sender, function_sender)?;
     }
 
     Ok(())
 }
 
 fn send_statement<'a, B: Backend>(
-    statement: &Expr<'a>,
+    statement: &'a Statement<'a>,
     sender: &mut Sender<B>,
-    builder: &mut FunctionBuilder,
+    function_sender: &mut FunctionSender<'a>,
 ) -> Result<(), ReportError> {
-    let (type_, value) = send_expression(statement, sender, builder)?;
+    match statement {
+        Statement::Print(expr) => send_print_statement(expr, sender, function_sender),
+        Statement::Declare(var, type_, lit) => {
+            send_declare_statement(var, *type_, lit, sender, function_sender)
+        }
+    }
+}
+
+fn send_print_statement<'a, B: Backend>(
+    expr: &Expr<'a>,
+    sender: &mut Sender<B>,
+    function_sender: &mut FunctionSender<'a>,
+) -> Result<(), ReportError> {
+    let (type_, value) = send_expression(expr, sender, function_sender)?;
 
     let value = match type_ {
-        crate::types::Type::String => value,
+        crate::types::Type::Chars => value,
         crate::types::Type::Number => {
             // convert to string
             let slot =
-                builder.create_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, 24));
-            let buff = builder.ins().stack_addr(sender.pointer_type, slot, 0);
-            float_to_string(value, buff, sender, builder)?
+                function_sender.builder.create_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, 24));
+            let buff = function_sender.builder.ins().stack_addr(sender.pointer_type, slot, 0);
+            float_to_string(value, buff, sender, &mut function_sender.builder)?
         }
         crate::types::Type::Boolean => {
-            let else_block = builder.create_ebb();
-            let merge_block = builder.create_ebb();
-            builder.append_ebb_param(merge_block, sender.pointer_type);
+            let else_block = function_sender.builder.create_ebb();
+            let merge_block = function_sender.builder.create_ebb();
+            function_sender.builder.append_ebb_param(merge_block, sender.pointer_type);
 
-            builder.ins().brz(value, else_block, &[]);
-            let then_return = reference_constant_string("yes", sender, builder)?;
-            builder.ins().jump(merge_block, &[then_return]);
+            function_sender.builder.ins().brz(value, else_block, &[]);
+            let then_return = reference_constant_string("yes", sender, &mut function_sender.builder)?;
+            function_sender.builder.ins().jump(merge_block, &[then_return]);
 
-            builder.switch_to_block(else_block);
-            builder.seal_block(else_block);
-            let else_return = reference_constant_string("no", sender, builder)?;
-            builder.ins().jump(merge_block, &[else_return]);
+            function_sender.builder.switch_to_block(else_block);
+            function_sender.builder.seal_block(else_block);
+            let else_return = reference_constant_string("no", sender, &mut function_sender.builder)?;
+            function_sender.builder.ins().jump(merge_block, &[else_return]);
 
-            builder.switch_to_block(merge_block);
-            builder.seal_block(merge_block);
+            function_sender.builder.switch_to_block(merge_block);
+            function_sender.builder.seal_block(merge_block);
 
-            builder.ebb_params(merge_block)[0]
+            function_sender.builder.ebb_params(merge_block)[0]
         }
     };
 
@@ -177,9 +196,33 @@ fn send_statement<'a, B: Backend>(
     let callee = sender
         .module
         .declare_function("puts", Linkage::Import, &sig)?;
-    let local_callee = sender.module.declare_func_in_func(callee, builder.func);
+    let local_callee = sender.module.declare_func_in_func(callee, function_sender.builder.func);
 
-    let _call = builder.ins().call(local_callee, &[value]);
+    let _call = function_sender.builder.ins().call(local_callee, &[value]);
+
+    Ok(())
+}
+
+fn send_declare_statement<'a, B: Backend>(
+    var: &'a pst::Variable<'a>,
+    type_: crate::types::Type,
+    lit: &Option<Literal<'a>>,
+    sender: &mut Sender<B>,
+    function_sender: &mut FunctionSender<'a>,
+) -> Result<(), ReportError> {
+    let slot_size = ir_type(sender, type_);
+
+    let slot = function_sender
+        .builder
+        .create_stack_slot(StackSlotData::new(
+            StackSlotKind::ExplicitSlot,
+            slot_size.bytes(),
+        ));
+
+    let lit = function_sender.builder.ins().f64const(0);
+    function_sender.builder.ins().stack_store(lit, slot, 0);
+
+    function_sender.vars.insert(var, (type_, slot));
 
     Ok(())
 }
@@ -187,64 +230,54 @@ fn send_statement<'a, B: Backend>(
 fn send_expression<'a, B: Backend>(
     expr: &Expr<'a>,
     sender: &mut Sender<B>,
-    builder: &mut FunctionBuilder,
+    function_sender: &mut FunctionSender<'a>,
 ) -> Result<(crate::types::Type, Value), ReportError> {
     let result = match expr {
         Expr::BinOp(op, left, right) => {
-            let (left_type, left_value) = send_expression(left, sender, builder)?;
-            let (right_type, right_value) = send_expression(right, sender, builder)?;
+            let (left_type, left_value) = send_expression(left, sender, function_sender)?;
+            let (right_type, right_value) = send_expression(right, sender, function_sender)?;
 
             match op {
                 BinOperator::AddOrAnd => {
                     if left_type.is_number() {
                         // assume add
                         Number.check_bin(left_type, right_type, || {
-                            builder.ins().fadd(left_value, right_value)
+                            function_sender.builder.ins().fadd(left_value, right_value)
                         })
                     } else {
                         // assume and
                         Boolean.check_bin(left_type, right_type, || {
-                            builder.ins().band(left_value, right_value)
+                            function_sender.builder.ins().band(left_value, right_value)
                         })
                     }
                 }
-                BinOperator::Sub => {
-                    Number.check_bin(left_type, right_type, || {
-                        builder.ins().fsub(left_value, right_value)
-                    })
-                }
-                BinOperator::Mul => {
-                    Number.check_bin(left_type, right_type, || {
-                        builder.ins().fmul(left_value, right_value)
-                    })
-                }
-                BinOperator::Div => {
-                    Number.check_bin(left_type, right_type, || {
-                        builder.ins().fdiv(left_value, right_value)
-                    })
-                }
-                BinOperator::Or => {
-                    Boolean.check_bin(left_type, right_type, || {
-                        builder.ins().bor(left_value, right_value)
-                    })
-                }
-                BinOperator::EitherOr => {
-                    Boolean.check_bin(left_type, right_type, || {
-                        builder.ins().bxor(left_value, right_value)
-                    })
-                }
+                BinOperator::Sub => Number.check_bin(left_type, right_type, || {
+                    function_sender.builder.ins().fsub(left_value, right_value)
+                }),
+                BinOperator::Mul => Number.check_bin(left_type, right_type, || {
+                    function_sender.builder.ins().fmul(left_value, right_value)
+                }),
+                BinOperator::Div => Number.check_bin(left_type, right_type, || {
+                    function_sender.builder.ins().fdiv(left_value, right_value)
+                }),
+                BinOperator::Or => Boolean.check_bin(left_type, right_type, || {
+                    function_sender.builder.ins().bor(left_value, right_value)
+                }),
+                BinOperator::EitherOr => Boolean.check_bin(left_type, right_type, || {
+                    function_sender.builder.ins().bxor(left_value, right_value)
+                }),
             }?
         }
         Expr::Not(val) => {
-            let (type_, value) = send_value(val, sender, builder)?;
+            let (type_, value) = send_value(val, sender, function_sender)?;
 
             Boolean.check(type_, || {
                 // bnot doesn't currently support b1 https://github.com/bytecodealliance/cranelift/issues/922
-                let int = builder.ins().bint(types::I32, value);
-                builder.ins().icmp_imm(IntCC::Equal, int, 0)
+                let int = function_sender.builder.ins().bint(types::I32, value);
+                function_sender.builder.ins().icmp_imm(IntCC::Equal, int, 0)
             })?
         }
-        Expr::Val(val) => send_value(val, sender, builder)?,
+        Expr::Val(val) => send_value(val, sender, function_sender)?,
     };
 
     Ok(result)
@@ -253,23 +286,35 @@ fn send_expression<'a, B: Backend>(
 fn send_value<'a, B: Backend>(
     value: &pst::Value<'a>,
     sender: &mut Sender<B>,
-    builder: &mut FunctionBuilder,
+    function_sender: &mut FunctionSender<'a>,
 ) -> Result<(crate::types::Type, Value), ReportError> {
     let result = match value {
         pst::Value::Lit(lit) => match lit {
             Literal::String(string) => {
                 create_constant_string(string, sender)?;
                 (
-                    crate::types::Type::String,
-                    reference_constant_string(string, sender, builder)?,
+                    crate::types::Type::Chars,
+                    reference_constant_string(string, sender, &mut function_sender.builder)?,
                 )
             }
-            Literal::Number(n) => (crate::types::Type::Number, builder.ins().f64const(*n)),
+            Literal::Number(n) => (
+                crate::types::Type::Number,
+                function_sender.builder.ins().f64const(*n),
+            ),
             Literal::Boolean(b) => (
                 crate::types::Type::Boolean,
-                builder.ins().bconst(types::B1, *b),
+                function_sender.builder.ins().bconst(types::B1, *b),
             ),
         },
+        pst::Value::Var(var) => {
+            let (_type, slot) = function_sender.vars[var];
+            let v = match _type {
+                Chars => function_sender.builder.ins().stack_addr(sender.pointer_type, slot, 0),
+                _ => function_sender.builder.ins().stack_load(ir_type(sender, _type), slot, 0),
+            };
+
+            (_type, v)
+        }
     };
 
     Ok(result)
@@ -352,5 +397,27 @@ impl<B: Backend> Sender<B> {
     fn finalize(&mut self, context: &mut Context) {
         self.module.clear_context(context);
         self.module.finalize_definitions();
+    }
+}
+
+struct FunctionSender<'a> {
+    builder: FunctionBuilder<'a>,
+    vars: HashMap<&'a pst::Variable<'a>, (crate::types::Type, StackSlot)>,
+}
+
+impl<'a> FunctionSender<'a> {
+    fn new(builder: FunctionBuilder<'a>) -> FunctionSender<'a> {
+        FunctionSender {
+            builder,
+            vars: HashMap::new(),
+        }
+    }
+}
+
+fn ir_type<B: Backend>(sender: &Sender<B>, type_: crate::types::Type) -> Type {
+    match type_ {
+        Chars => sender.pointer_type,
+        Number => types::F64,
+        Boolean => types::B1,
     }
 }

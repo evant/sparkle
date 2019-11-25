@@ -2,14 +2,16 @@ use nom::branch::alt;
 use nom::bytes::complete::{is_a, is_not, tag, take_till1, take_while};
 use nom::character::complete::space1;
 use nom::combinator::{complete, map, opt, recognize};
-use nom::error::{convert_error, ParseError, VerboseError};
+use nom::error::{convert_error, ErrorKind, ParseError, VerboseError};
 use nom::multi::{fold_many0, many0, many1, separated_list};
 use nom::number::complete::double;
 use nom::sequence::{delimited, pair, preceded, separated_pair, terminated, tuple};
-use nom::{dbg_dmp, IResult};
+use nom::IResult;
 
 use crate::error::ReportError;
-use crate::pst::{BinOperator, Expr, Literal, Paragraph, Report, Value};
+use crate::pst::{BinOperator, Expr, Literal, Paragraph, Report, Statement, Value, Variable};
+use crate::types::Type;
+use crate::types::Type::Number;
 
 type ReadResult<'a, O> = IResult<&'a str, O, VerboseError<&'a str>>;
 
@@ -24,11 +26,8 @@ pub fn read(report_text: &str) -> Result<Report, ReportError> {
     Ok(ast)
 }
 
-fn is_keyword(s: &str) -> bool {
-    match s {
-        "Dear" => true,
-        _ => false,
-    }
+fn keyword(s: &str) -> ReadResult<&str> {
+    assign(s)
 }
 
 fn is_punctuation(s: char) -> bool {
@@ -56,7 +55,15 @@ fn identifier(s: &str) -> ReadResult<&str> {
 }
 
 fn word(s: &str) -> ReadResult<&str> {
-    recognize(many1(not_space_or_punctuation))(s)
+    let (rest, word) = recognize(many1(not_space_or_punctuation))(s)?;
+    // fail on keywords
+    if keyword(word).is_ok() {
+        return Err(nom::Err::Error(VerboseError::from_error_kind(
+            s,
+            ErrorKind::Not,
+        )));
+    }
+    Ok((rest, word))
 }
 
 fn whitespace_delim<'a, O, P>(parser: P) -> impl Fn(&'a str) -> ReadResult<O>
@@ -129,11 +136,47 @@ fn paragraph_declaration(s: &str) -> ReadResult<&str> {
     )(s)
 }
 
-fn statement(s: &str) -> ReadResult<Expr> {
+fn statement(s: &str) -> ReadResult<Statement> {
     terminated(
-        terminated(preceded(preceded(print, whitespace0), expr), punctuation),
+        terminated(alt((print_statement, declare_statement)), punctuation),
         whitespace0,
     )(s)
+}
+
+fn print_statement(s: &str) -> ReadResult<Statement> {
+    map(preceded(preceded(print, whitespace0), expr), |s| {
+        Statement::Print(s)
+    })(s)
+}
+
+fn declare_statement(s: &str) -> ReadResult<Statement> {
+    map(
+        preceded(
+            preceded(tag("Did you know that"), whitespace0),
+            separated_pair(identifier, whitespace_delim(assign), declare_type),
+        ),
+        |(name, type_)| Statement::Declare(Variable(name), type_, None),
+    )(s)
+}
+
+fn declare_type(s: &str) -> ReadResult<Type> {
+    declare_type_number(s)
+}
+
+fn declare_type_number(s: &str) -> ReadResult<Type> {
+    map(tag("a number"), |_| Number)(s)
+}
+
+fn assign(s: &str) -> ReadResult<&str> {
+    alt((
+        tag("is"),
+        tag("was"),
+        tag("has"),
+        tag("had"),
+        tag("like"),
+        tag("likes"),
+        tag("liked"),
+    ))(s)
 }
 
 fn expr(s: &str) -> ReadResult<Expr> {
@@ -141,15 +184,27 @@ fn expr(s: &str) -> ReadResult<Expr> {
 }
 
 fn value_expr(s: &str) -> ReadResult<Expr> {
-    alt((not, map(value, Expr::Val)))(s)
+    alt((prefix_not, map(value, Expr::Val)))(s)
 }
 
 fn literal(s: &str) -> ReadResult<Literal> {
     alt((string, number, boolean))(s)
 }
 
+fn var(s: &str) -> ReadResult<Variable> {
+    map(identifier, Variable)(s)
+}
+
 fn value(s: &str) -> ReadResult<Value> {
+    alt((value_lit, value_var))(s)
+}
+
+fn value_lit(s: &str) -> ReadResult<Value> {
     map(literal, Value::Lit)(s)
+}
+
+fn value_var(s: &str) -> ReadResult<Value> {
+    map(var, Value::Var)(s)
 }
 
 fn prefix<'a, O1, O2, O3, P1, P2, V1, V2>(
@@ -298,8 +353,8 @@ fn prefix_xor(s: &str) -> ReadResult<Expr> {
     )(s)
 }
 
-fn not(s: &str) -> ReadResult<Expr> {
-    map(preceded(terminated(tag("not"), whitespace0), value), |b| {
+fn prefix_not(s: &str) -> ReadResult<Expr> {
+    map(preceded(terminated(tag("not"), whitespace0), value_lit), |b| {
         Expr::Not(b)
     })(s)
 }
@@ -448,7 +503,9 @@ fn parses_paragraph() {
             Paragraph {
                 name: "how to fly",
                 closing_name: "how to fly",
-                statements: vec![Expr::Val(Value::Lit(Literal::String("Fly!")))],
+                statements: vec![Statement::Print(Expr::Val(Value::Lit(Literal::String(
+                    "Fly!"
+                ))))],
             }
         ))
     );
@@ -466,13 +523,13 @@ fn parses_paragraph() {
                 name: "how to fly",
                 closing_name: "how to fly",
                 statements: vec![
-                    Expr::Val(Value::Lit(Literal::String("Fly1!"))),
-                    Expr::BinOp(
+                    Statement::Print(Expr::Val(Value::Lit(Literal::String("Fly1!")))),
+                    Statement::Print(Expr::BinOp(
                         BinOperator::AddOrAnd,
                         Box::new(Expr::Val(Value::Lit(Literal::Number(5f64)))),
                         Box::new(Expr::Val(Value::Lit(Literal::Number(6f64)))),
-                    ),
-                    Expr::Val(Value::Lit(Literal::Boolean(true))),
+                    )),
+                    Statement::Print(Expr::Val(Value::Lit(Literal::Boolean(true)))),
                 ],
             }
         ))
@@ -499,7 +556,9 @@ fn parses_report() {
                 paragraphs: vec![Paragraph {
                     name: "how to fly",
                     closing_name: "how to fly",
-                    statements: vec![Expr::Val(Value::Lit(Literal::String("Fly!")))],
+                    statements: vec![Statement::Print(Expr::Val(Value::Lit(Literal::String(
+                        "Fly!"
+                    ))))],
                 }],
                 writer: " Twilight Sparkle",
             }
@@ -569,7 +628,7 @@ fn parses_infix_term() {
                 Box::new(Expr::BinOp(
                     BinOperator::AddOrAnd,
                     Box::new(Expr::Val(Value::Lit(Literal::Number(2f64)))),
-                    Box::new(Expr::Val(Value::Lit(Literal::Number(1f64))))
+                    Box::new(Expr::Val(Value::Lit(Literal::Number(1f64)))),
                 )),
                 Box::new(Expr::Val(Value::Lit(Literal::Number(3f64)))),
             )
@@ -595,7 +654,7 @@ fn parses_infix_term() {
                 Box::new(Expr::BinOp(
                     BinOperator::Or,
                     Box::new(Expr::Val(Value::Lit(Literal::Boolean(true)))),
-                    Box::new(Expr::Val(Value::Lit(Literal::Boolean(false))))
+                    Box::new(Expr::Val(Value::Lit(Literal::Boolean(false)))),
                 )),
                 Box::new(Expr::Val(Value::Lit(Literal::Boolean(false)))),
             )
@@ -665,7 +724,7 @@ fn parses_prefix_term() {
 #[test]
 fn parses_not() {
     assert_eq!(
-        not("not true"),
+        prefix_not("not true"),
         Ok(("", Expr::Not(Value::Lit(Literal::Boolean(true)))))
     );
     assert_eq!(
@@ -675,42 +734,43 @@ fn parses_not() {
             Expr::BinOp(
                 BinOperator::AddOrAnd,
                 Box::new(Expr::Not(Value::Lit(Literal::Boolean(true)))),
-                Box::new(Expr::Val(Value::Lit(Literal::Boolean(false))))
+                Box::new(Expr::Val(Value::Lit(Literal::Boolean(false)))),
             )
         ))
     );
 }
 
 #[test]
-fn parses_statement() {
+fn parses_print_statement() {
     assert_eq!(
         statement("I wrote 1 added to 2."),
         Ok((
             "",
-            Expr::BinOp(
+            Statement::Print(Expr::BinOp(
                 BinOperator::AddOrAnd,
                 Box::new(Expr::Val(Value::Lit(Literal::Number(1f64)))),
                 Box::new(Expr::Val(Value::Lit(Literal::Number(2f64)))),
-            )
+            ))
         ))
     );
+    assert_eq!(
+        statement("I sang the elements of harmony count."),
+        Ok((
+            "",
+            Statement::Print(Expr::Val(Value::Var(Variable(
+                "the elements of harmony count"
+            ))))
+        ))
+    )
 }
 
 #[test]
-fn parses_multiple_boolean_operators() {
+fn parses_declare_statement() {
     assert_eq!(
-        expr("true and false or true"),
+        statement("Did you know that the elements of harmony count is a number?"),
         Ok((
             "",
-            Expr::BinOp(
-                BinOperator::Or,
-                Box::new(Expr::BinOp(
-                    BinOperator::AddOrAnd,
-                    Box::new(Expr::Val(Value::Lit(Literal::Boolean(true)))),
-                    Box::new(Expr::Val(Value::Lit(Literal::Boolean(false)))),
-                )),
-                Box::new(Expr::Val(Value::Lit(Literal::Boolean(true)))),
-            )
+            Statement::Declare(Variable("the elements of harmony count"), Number, None)
         ))
-    );
+    )
 }
