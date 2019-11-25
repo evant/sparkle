@@ -29,6 +29,7 @@ pub fn read(report_text: &str) -> Result<Report, ReportError> {
 fn keyword(s: &str) -> ReadResult<&str> {
     alt((
         keyword_declare,
+        keyword_always,
         keyword_assign,
         keyword_infix_add,
         keyword_infix_sub,
@@ -155,16 +156,27 @@ fn print_statement(s: &str) -> ReadResult<Statement> {
     })(s)
 }
 
+fn keyword_always(s: &str) -> ReadResult<&str> {
+    tag("always")(s)
+}
+
 fn declare_statement(s: &str) -> ReadResult<Statement> {
     map(
         preceded(
             preceded(tag("Did you know that"), whitespace0),
             tuple((
-                separated_pair(identifier, whitespace_delim(keyword_declare), declare_type),
+                identifier,
+                whitespace_delim(terminated(
+                    map(opt(terminated(keyword_always, whitespace0)), |always| {
+                        always.is_some()
+                    }),
+                    keyword_declare,
+                )),
+                declare_type,
                 opt(whitespace_delim(literal)),
             )),
         ),
-        |((name, type_), lit)| Statement::Declare(Variable(name), type_, lit),
+        |(name, is_const, type_, lit)| Statement::Declare(Variable(name), type_, lit, is_const),
     )(s)
 }
 
@@ -845,7 +857,12 @@ fn parses_declare_statement() {
         statement("Did you know that the elements of harmony count is a number?"),
         Ok((
             "",
-            Statement::Declare(Variable("the elements of harmony count"), Number, None)
+            Statement::Declare(
+                Variable("the elements of harmony count"),
+                Number,
+                None,
+                false
+            )
         ))
     );
     assert_eq!(
@@ -855,18 +872,20 @@ fn parses_declare_statement() {
             Statement::Declare(
                 Variable("Applejack's hat"),
                 Chars,
-                Some(Literal::String("Talluah"))
+                Some(Literal::String("Talluah")),
+                false
             )
         ))
     );
     assert_eq!(
-        statement("Did you know that Pinkie Pie has the argument right?"),
+        statement("Did you know that Pinkie Pie always has the argument right?"),
         Ok((
             "",
             Statement::Declare(
                 Variable("Pinkie Pie"),
                 Boolean,
-                Some(Literal::Boolean(true))
+                Some(Literal::Boolean(true)),
+                true
             )
         ))
     );

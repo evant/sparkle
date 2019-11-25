@@ -1,4 +1,4 @@
-use std::fs::File;
+use std::fs::{File, read_to_string};
 
 use std::mem;
 use std::str::FromStr;
@@ -148,8 +148,8 @@ fn send_statement<'a, B: Backend>(
 ) -> Result<(), ReportError> {
     match statement {
         Statement::Print(expr) => send_print_statement(expr, sender, function_sender),
-        Statement::Declare(var, type_, lit) => {
-            send_declare_statement(var, *type_, lit, sender, function_sender)
+        Statement::Declare(var, type_, lit, is_const) => {
+            send_declare_statement(var, *type_, lit, *is_const, sender, function_sender)
         }
         Statement::Assign(var, expr) => send_assign_statement(var, expr, sender, function_sender),
     }
@@ -224,6 +224,7 @@ fn send_declare_statement<'a, B: Backend>(
     var: &'a pst::Variable<'a>,
     type_: crate::types::Type,
     lit: &Option<Literal<'a>>,
+    is_const: bool,
     sender: &mut Sender<B>,
     function_sender: &mut FunctionSender<'a>,
 ) -> Result<(), ReportError> {
@@ -254,7 +255,14 @@ fn send_declare_statement<'a, B: Backend>(
 
     function_sender.builder.ins().stack_store(value, slot, 0);
 
-    function_sender.vars.insert(var, (type_, slot));
+    function_sender.vars.insert(
+        var,
+        VarData {
+            type_,
+            is_const,
+            slot,
+        },
+    );
 
     Ok(())
 }
@@ -266,9 +274,13 @@ fn send_assign_statement<'a, B: Backend>(
     function_sender: &mut FunctionSender<'a>,
 ) -> Result<(), ReportError> {
     let (expr_type, expr_value) = send_expression(expr, sender, function_sender)?;
-    let (var_type, slot) = function_sender.vars[var];
+    let VarData{ type_, is_const, slot} = function_sender.vars[var];
 
-    var_type.check(expr_type, || {
+    if is_const {
+        return Err(ReportError::TypeError(format!("Nopony can change what is always true: {}", var.0)));
+    }
+
+    type_.check(expr_type, || {
         function_sender
             .builder
             .ins()
@@ -344,12 +356,12 @@ fn send_value<'a, B: Backend>(
     let result = match value {
         pst::Value::Lit(lit) => send_literal(lit, sender, function_sender)?,
         pst::Value::Var(var) => {
-            let (_type, slot) = function_sender.vars[var];
+            let var_data = &function_sender.vars[var];
             let v = function_sender
                 .builder
                 .ins()
-                .stack_load(ir_type(sender, _type), slot, 0);
-            (_type, v)
+                .stack_load(ir_type(sender, var_data.type_), var_data.slot, 0);
+            (var_data.type_, v)
         }
     };
 
@@ -480,7 +492,7 @@ impl<B: Backend> Sender<B> {
 
 struct FunctionSender<'a> {
     builder: FunctionBuilder<'a>,
-    vars: HashMap<&'a pst::Variable<'a>, (crate::types::Type, StackSlot)>,
+    vars: HashMap<&'a pst::Variable<'a>, VarData>,
 }
 
 impl<'a> FunctionSender<'a> {
@@ -490,6 +502,12 @@ impl<'a> FunctionSender<'a> {
             vars: HashMap::new(),
         }
     }
+}
+
+struct VarData {
+    type_: crate::types::Type,
+    is_const: bool,
+    slot: StackSlot,
 }
 
 fn ir_type<B: Backend>(sender: &Sender<B>, type_: crate::types::Type) -> Type {

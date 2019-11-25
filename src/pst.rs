@@ -11,7 +11,7 @@ pub struct Paragraph<'a> {
 #[derive(Debug, PartialEq)]
 pub enum Statement<'a> {
     Print(Expr<'a>),
-    Declare(Variable<'a>, Type, Option<Literal<'a>>),
+    Declare(Variable<'a>, Type, Option<Literal<'a>>, bool),
     Assign(Variable<'a>, Expr<'a>),
 }
 
