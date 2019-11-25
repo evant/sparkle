@@ -371,7 +371,7 @@ fn send_boolean_literal(
         function_sender
             .builder
             .ins()
-            .iconst(types::I32, if b { std::i32::MIN as i64 } else { 0 }),
+            .iconst(types::I32, if b { 1 } else { 0 }),
     )
 }
 
