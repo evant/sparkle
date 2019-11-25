@@ -78,7 +78,11 @@ fn variables() -> TestResult {
 
     cmd.arg("gallop").arg("examples/variables.fpp");
 
-    cmd.assert().success().stdout("0\n");
+    cmd.assert().success().stdout(
+        "0\n\
+         Tallulah\n\
+         yes\n",
+    );
 
     Ok(())
 }

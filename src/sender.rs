@@ -1,5 +1,5 @@
 use std::fs::File;
-use std::hint::unreachable_unchecked;
+
 use std::mem;
 use std::str::FromStr;
 
@@ -14,10 +14,11 @@ use target_lexicon::Triple;
 
 use crate::error::ReportError;
 use crate::pst;
-use crate::pst::{BinOperator, Expr, Literal, Paragraph, Report, Statement, Variable};
+use crate::pst::{BinOperator, Expr, Literal, Paragraph, Report, Statement};
 use crate::types::Type::{Boolean, Chars, Number};
 use cranelift::codegen::ir::StackSlot;
 use std::collections::HashMap;
+
 
 pub fn send_out<'a>(report: &'a Report, name: &str, target: &str) -> Result<(), ReportError> {
     let mut sender = faerie_sender(name, target)?;
@@ -165,24 +166,38 @@ fn send_print_statement<'a, B: Backend>(
         crate::types::Type::Chars => value,
         crate::types::Type::Number => {
             // convert to string
-            let slot =
-                function_sender.builder.create_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, 24));
-            let buff = function_sender.builder.ins().stack_addr(sender.pointer_type, slot, 0);
+            let slot = function_sender
+                .builder
+                .create_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, 24));
+            let buff = function_sender
+                .builder
+                .ins()
+                .stack_addr(sender.pointer_type, slot, 0);
             float_to_string(value, buff, sender, &mut function_sender.builder)?
         }
         crate::types::Type::Boolean => {
             let else_block = function_sender.builder.create_ebb();
             let merge_block = function_sender.builder.create_ebb();
-            function_sender.builder.append_ebb_param(merge_block, sender.pointer_type);
+            function_sender
+                .builder
+                .append_ebb_param(merge_block, sender.pointer_type);
 
             function_sender.builder.ins().brz(value, else_block, &[]);
-            let then_return = reference_constant_string("yes", sender, &mut function_sender.builder)?;
-            function_sender.builder.ins().jump(merge_block, &[then_return]);
+            let then_return =
+                reference_constant_string("yes", sender, &mut function_sender.builder)?;
+            function_sender
+                .builder
+                .ins()
+                .jump(merge_block, &[then_return]);
 
             function_sender.builder.switch_to_block(else_block);
             function_sender.builder.seal_block(else_block);
-            let else_return = reference_constant_string("no", sender, &mut function_sender.builder)?;
-            function_sender.builder.ins().jump(merge_block, &[else_return]);
+            let else_return =
+                reference_constant_string("no", sender, &mut function_sender.builder)?;
+            function_sender
+                .builder
+                .ins()
+                .jump(merge_block, &[else_return]);
 
             function_sender.builder.switch_to_block(merge_block);
             function_sender.builder.seal_block(merge_block);
@@ -196,7 +211,9 @@ fn send_print_statement<'a, B: Backend>(
     let callee = sender
         .module
         .declare_function("puts", Linkage::Import, &sig)?;
-    let local_callee = sender.module.declare_func_in_func(callee, function_sender.builder.func);
+    let local_callee = sender
+        .module
+        .declare_func_in_func(callee, function_sender.builder.func);
 
     let _call = function_sender.builder.ins().call(local_callee, &[value]);
 
@@ -219,8 +236,31 @@ fn send_declare_statement<'a, B: Backend>(
             slot_size.bytes(),
         ));
 
-    let lit = function_sender.builder.ins().f64const(0);
-    function_sender.builder.ins().stack_store(lit, slot, 0);
+    let (_, value) = match lit {
+        Some(l) => {
+            let (l_type, value) = send_literal(l, sender, function_sender)?;
+            // ensure literal type matches what's declared.
+            type_.check(l_type, || {
+                if type_.is_boolean() {
+                    // b1 can't be stored on the stack, convert to an int
+                    // https://github.com/bytecodealliance/cranelift/issues/1117
+                    function_sender.builder.ins().bint(types::I32, value)
+                } else {
+                    value
+                }
+            })?
+        }
+        None => match type_ {
+            Chars => {
+                let value = function_sender.builder.ins().null(sender.pointer_type);
+                (Chars, value)
+            }
+            Number => send_number_literal(0f64, function_sender),
+            Boolean => send_boolean_literal(false, function_sender),
+        },
+    };
+
+    function_sender.builder.ins().stack_store(value, slot, 0);
 
     function_sender.vars.insert(var, (type_, slot));
 
@@ -289,35 +329,66 @@ fn send_value<'a, B: Backend>(
     function_sender: &mut FunctionSender<'a>,
 ) -> Result<(crate::types::Type, Value), ReportError> {
     let result = match value {
-        pst::Value::Lit(lit) => match lit {
-            Literal::String(string) => {
-                create_constant_string(string, sender)?;
-                (
-                    crate::types::Type::Chars,
-                    reference_constant_string(string, sender, &mut function_sender.builder)?,
-                )
-            }
-            Literal::Number(n) => (
-                crate::types::Type::Number,
-                function_sender.builder.ins().f64const(*n),
-            ),
-            Literal::Boolean(b) => (
-                crate::types::Type::Boolean,
-                function_sender.builder.ins().bconst(types::B1, *b),
-            ),
-        },
+        pst::Value::Lit(lit) => send_literal(lit, sender, function_sender)?,
         pst::Value::Var(var) => {
             let (_type, slot) = function_sender.vars[var];
             let v = match _type {
-                Chars => function_sender.builder.ins().stack_addr(sender.pointer_type, slot, 0),
-                _ => function_sender.builder.ins().stack_load(ir_type(sender, _type), slot, 0),
+                Boolean => {
+                    // b1 can't be stored on the stack, convert from an int
+                    // https://github.com/bytecodealliance/cranelift/issues/1117
+                    let int = function_sender.builder.ins().stack_load(types::I32, slot, 0);
+                    function_sender.builder.ins().icmp_imm(IntCC::NotEqual, int, 0)
+                }
+                _ => {
+                    function_sender . builder
+                        .ins()
+                        .stack_load(ir_type(sender, _type), slot, 0)
+                }
             };
-
             (_type, v)
         }
     };
 
     Ok(result)
+}
+
+fn send_literal<'a, B: Backend>(
+    lit: &Literal<'a>,
+    sender: &mut Sender<B>,
+    function_sender: &mut FunctionSender<'a>,
+) -> Result<(crate::types::Type, Value), ReportError> {
+    let result = match lit {
+        Literal::String(string) => {
+            create_constant_string(string, sender)?;
+            (
+                crate::types::Type::Chars,
+                reference_constant_string(string, sender, &mut function_sender.builder)?,
+            )
+        }
+        Literal::Number(n) => send_number_literal(*n, function_sender),
+        Literal::Boolean(b) => send_boolean_literal(*b, function_sender),
+    };
+    Ok(result)
+}
+
+fn send_number_literal(
+    n: f64,
+    function_sender: &mut FunctionSender,
+) -> (crate::types::Type, Value) {
+    (
+        crate::types::Type::Number,
+        function_sender.builder.ins().f64const(n),
+    )
+}
+
+fn send_boolean_literal(
+    b: bool,
+    function_sender: &mut FunctionSender,
+) -> (crate::types::Type, Value) {
+    (
+        crate::types::Type::Boolean,
+        function_sender.builder.ins().bconst(types::B1, b),
+    )
 }
 
 fn create_constant_string<B: Backend>(

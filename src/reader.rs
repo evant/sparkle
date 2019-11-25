@@ -11,7 +11,7 @@ use nom::IResult;
 use crate::error::ReportError;
 use crate::pst::{BinOperator, Expr, Literal, Paragraph, Report, Statement, Value, Variable};
 use crate::types::Type;
-use crate::types::Type::Number;
+use crate::types::Type::{Chars, Number, Boolean};
 
 type ReadResult<'a, O> = IResult<&'a str, O, VerboseError<&'a str>>;
 
@@ -153,18 +153,39 @@ fn declare_statement(s: &str) -> ReadResult<Statement> {
     map(
         preceded(
             preceded(tag("Did you know that"), whitespace0),
-            separated_pair(identifier, whitespace_delim(assign), declare_type),
+            tuple((separated_pair(identifier, whitespace_delim(assign), declare_type),
+            opt(whitespace_delim(literal))))
         ),
-        |(name, type_)| Statement::Declare(Variable(name), type_, None),
+        |((name, type_), lit)| Statement::Declare(Variable(name), type_, lit),
     )(s)
 }
 
 fn declare_type(s: &str) -> ReadResult<Type> {
-    declare_type_number(s)
+    alt((type_number, type_chars, type_boolean))(s)
 }
 
-fn declare_type_number(s: &str) -> ReadResult<Type> {
-    map(tag("a number"), |_| Number)(s)
+fn type_number(s: &str) -> ReadResult<Type> {
+    map(recognize(separated_pair(
+        alt((tag("a"), tag("the"))),
+        whitespace0,
+        tag("number"),
+    )), |_| Number)(s)
+}
+
+fn type_chars(s: &str) -> ReadResult<Type> {
+    map(recognize(separated_pair(
+        alt((tag("a"), tag("the"))),
+        whitespace0,
+        alt((tag("word"), tag("phrase"), tag("sentence"), tag("quote"), tag("name"))),
+    )), |_| Chars)(s)
+}
+
+fn type_boolean(s: &str) -> ReadResult<Type> {
+    map(recognize(separated_pair(
+        alt((tag("a"), tag("the"))),
+        whitespace0,
+        alt((tag("logic"), tag("argument"))),
+    )), |_| Boolean)(s)
 }
 
 fn assign(s: &str) -> ReadResult<&str> {
@@ -354,9 +375,10 @@ fn prefix_xor(s: &str) -> ReadResult<Expr> {
 }
 
 fn prefix_not(s: &str) -> ReadResult<Expr> {
-    map(preceded(terminated(tag("not"), whitespace0), value_lit), |b| {
-        Expr::Not(b)
-    })(s)
+    map(
+        preceded(terminated(tag("not"), whitespace0), value_lit),
+        |b| Expr::Not(b),
+    )(s)
 }
 
 fn boolean(s: &str) -> ReadResult<Literal> {
@@ -761,7 +783,7 @@ fn parses_print_statement() {
                 "the elements of harmony count"
             ))))
         ))
-    )
+    );
 }
 
 #[test]
@@ -772,5 +794,27 @@ fn parses_declare_statement() {
             "",
             Statement::Declare(Variable("the elements of harmony count"), Number, None)
         ))
-    )
+    );
+    assert_eq!(
+        statement("Did you know that Applejack's hat has the name \"Talluah\"?"),
+        Ok((
+            "",
+            Statement::Declare(
+                Variable("Applejack's hat"),
+                Chars,
+                Some(Literal::String("Talluah"))
+            )
+        ))
+    );
+    assert_eq!(
+        statement("Did you know that Pinkie Pie has the argument right?"),
+        Ok((
+            "",
+            Statement::Declare(
+                Variable("Pinkie Pie"),
+                Boolean,
+                Some(Literal::Boolean(true))
+            )
+        ))
+    );
 }
