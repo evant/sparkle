@@ -19,7 +19,6 @@ use crate::types::Type::{Boolean, Chars, Number};
 use cranelift::codegen::ir::StackSlot;
 use std::collections::HashMap;
 
-
 pub fn send_out<'a>(report: &'a Report, name: &str, target: &str) -> Result<(), ReportError> {
     let mut sender = faerie_sender(name, target)?;
     let mut context = sender.module.make_context();
@@ -240,15 +239,7 @@ fn send_declare_statement<'a, B: Backend>(
         Some(l) => {
             let (l_type, value) = send_literal(l, sender, function_sender)?;
             // ensure literal type matches what's declared.
-            type_.check(l_type, || {
-                if type_.is_boolean() {
-                    // b1 can't be stored on the stack, convert to an int
-                    // https://github.com/bytecodealliance/cranelift/issues/1117
-                    function_sender.builder.ins().bint(types::I32, value)
-                } else {
-                    value
-                }
-            })?
+            type_.check(l_type, || value)?
         }
         None => match type_ {
             Chars => {
@@ -312,9 +303,8 @@ fn send_expression<'a, B: Backend>(
             let (type_, value) = send_value(val, sender, function_sender)?;
 
             Boolean.check(type_, || {
-                // bnot doesn't currently support b1 https://github.com/bytecodealliance/cranelift/issues/922
-                let int = function_sender.builder.ins().bint(types::I32, value);
-                function_sender.builder.ins().icmp_imm(IntCC::Equal, int, 0)
+                let b = function_sender.builder.ins().icmp_imm(IntCC::Equal, value, 0);
+                function_sender.builder.ins().bint(types::I32, b)
             })?
         }
         Expr::Val(val) => send_value(val, sender, function_sender)?,
@@ -332,19 +322,10 @@ fn send_value<'a, B: Backend>(
         pst::Value::Lit(lit) => send_literal(lit, sender, function_sender)?,
         pst::Value::Var(var) => {
             let (_type, slot) = function_sender.vars[var];
-            let v = match _type {
-                Boolean => {
-                    // b1 can't be stored on the stack, convert from an int
-                    // https://github.com/bytecodealliance/cranelift/issues/1117
-                    let int = function_sender.builder.ins().stack_load(types::I32, slot, 0);
-                    function_sender.builder.ins().icmp_imm(IntCC::NotEqual, int, 0)
-                }
-                _ => {
-                    function_sender . builder
-                        .ins()
-                        .stack_load(ir_type(sender, _type), slot, 0)
-                }
-            };
+            let v = function_sender
+                .builder
+                .ins()
+                .stack_load(ir_type(sender, _type), slot, 0);
             (_type, v)
         }
     };
@@ -387,7 +368,10 @@ fn send_boolean_literal(
 ) -> (crate::types::Type, Value) {
     (
         crate::types::Type::Boolean,
-        function_sender.builder.ins().bconst(types::B1, b),
+        function_sender
+            .builder
+            .ins()
+            .iconst(types::I32, if b { std::i32::MIN as i64 } else { 0 }),
     )
 }
 
@@ -489,6 +473,8 @@ fn ir_type<B: Backend>(sender: &Sender<B>, type_: crate::types::Type) -> Type {
     match type_ {
         Chars => sender.pointer_type,
         Number => types::F64,
-        Boolean => types::B1,
+        // There are numerous bugs with b1, use i32 instead.
+        // https://github.com/bytecodealliance/cranelift/issues/1117
+        Boolean => types::I32,
     }
 }

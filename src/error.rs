@@ -4,7 +4,7 @@ use std::fmt::{Debug, Formatter, Result};
 
 use nom::error::{ErrorKind, VerboseError};
 
-use crate::error::ReportError::{ReadError, SendError, TypeError, ModuleError};
+use crate::error::ReportError::{ModuleError, ReadError, SendError, TypeError};
 
 pub enum ReportError {
     ReadError(String),

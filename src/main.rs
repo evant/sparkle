@@ -123,23 +123,23 @@ fn main() -> Result<(), Box<dyn Error>> {
         Command::Send => {
             let target = if args.len() == 4 {
                 match args[2].borrow() {
-                    "to" => {
-                        match args[3].borrow() {
-                            "host" => TARGET_HOST,
-                            "linux" => TARGET_LINUX,
-                            "macos" => TARGET_MACOS,
-                            t => {
-                                eprintln!("unrecognized target: {}", t);
-                                exit(1);
-                            }
+                    "to" => match args[3].borrow() {
+                        "host" => TARGET_HOST,
+                        "linux" => TARGET_LINUX,
+                        "macos" => TARGET_MACOS,
+                        t => {
+                            eprintln!("unrecognized target: {}", t);
+                            exit(1);
                         }
-                    }
+                    },
                     o => {
                         eprintln!("unrecognized option: {}", o);
                         exit(1);
                     }
                 }
-            } else { TARGET_HOST };
+            } else {
+                TARGET_HOST
+            };
             sender::send_out(&ast, name, target)?
         }
         Command::Gallop => sender::gallop(&ast, name)?,
