@@ -11,7 +11,7 @@ use nom::IResult;
 use crate::error::ReportError;
 use crate::pst::{BinOperator, Expr, Literal, Paragraph, Report, Statement, Value, Variable};
 use crate::types::Type;
-use crate::types::Type::{Chars, Number, Boolean};
+use crate::types::Type::{Boolean, Chars, Number};
 
 type ReadResult<'a, O> = IResult<&'a str, O, VerboseError<&'a str>>;
 
@@ -27,7 +27,13 @@ pub fn read(report_text: &str) -> Result<Report, ReportError> {
 }
 
 fn keyword(s: &str) -> ReadResult<&str> {
-    assign(s)
+    alt((
+        keyword_assign,
+        keyword_infix_add,
+        keyword_infix_sub,
+        keyword_infix_mul,
+        keyword_infix_div,
+    ))(s)
 }
 
 fn is_punctuation(s: char) -> bool {
@@ -35,10 +41,6 @@ fn is_punctuation(s: char) -> bool {
         '!' | ',' | '.' | ':' | '?' | '…' | '‽' => true,
         _ => false,
     }
-}
-
-fn does(s: &str) -> ReadResult<&str> {
-    alt((tag("does"), tag("do"), tag("did")))(s)
 }
 
 fn print(s: &str) -> ReadResult<&str> {
@@ -153,8 +155,10 @@ fn declare_statement(s: &str) -> ReadResult<Statement> {
     map(
         preceded(
             preceded(tag("Did you know that"), whitespace0),
-            tuple((separated_pair(identifier, whitespace_delim(assign), declare_type),
-            opt(whitespace_delim(literal))))
+            tuple((
+                separated_pair(identifier, whitespace_delim(keyword_assign), declare_type),
+                opt(whitespace_delim(literal)),
+            )),
         ),
         |((name, type_), lit)| Statement::Declare(Variable(name), type_, lit),
     )(s)
@@ -165,30 +169,45 @@ fn declare_type(s: &str) -> ReadResult<Type> {
 }
 
 fn type_number(s: &str) -> ReadResult<Type> {
-    map(recognize(separated_pair(
-        alt((tag("a"), tag("the"))),
-        whitespace0,
-        tag("number"),
-    )), |_| Number)(s)
+    map(
+        recognize(separated_pair(
+            alt((tag("a"), tag("the"))),
+            whitespace0,
+            tag("number"),
+        )),
+        |_| Number,
+    )(s)
 }
 
 fn type_chars(s: &str) -> ReadResult<Type> {
-    map(recognize(separated_pair(
-        alt((tag("a"), tag("the"))),
-        whitespace0,
-        alt((tag("word"), tag("phrase"), tag("sentence"), tag("quote"), tag("name"))),
-    )), |_| Chars)(s)
+    map(
+        recognize(separated_pair(
+            alt((tag("a"), tag("the"))),
+            whitespace0,
+            alt((
+                tag("word"),
+                tag("phrase"),
+                tag("sentence"),
+                tag("quote"),
+                tag("name"),
+            )),
+        )),
+        |_| Chars,
+    )(s)
 }
 
 fn type_boolean(s: &str) -> ReadResult<Type> {
-    map(recognize(separated_pair(
-        alt((tag("a"), tag("the"))),
-        whitespace0,
-        alt((tag("logic"), tag("argument"))),
-    )), |_| Boolean)(s)
+    map(
+        recognize(separated_pair(
+            alt((tag("a"), tag("the"))),
+            whitespace0,
+            alt((tag("logic"), tag("argument"))),
+        )),
+        |_| Boolean,
+    )(s)
 }
 
-fn assign(s: &str) -> ReadResult<&str> {
+fn keyword_assign(s: &str) -> ReadResult<&str> {
     alt((
         tag("is"),
         tag("was"),
@@ -282,32 +301,38 @@ fn infix_op(s: &str) -> ReadResult<BinOperator> {
     ))(s)
 }
 
+fn keyword_infix_add(s: &str) -> ReadResult<&str> {
+    alt((tag("added to"), tag("plus"), tag("and")))(s)
+}
+
 fn infix_add_op(s: &str) -> ReadResult<BinOperator> {
-    map(
-        whitespace_delim(alt((tag("added to"), tag("plus"), tag("and")))),
-        |_| BinOperator::AddOrAnd,
-    )(s)
+    map(whitespace_delim(keyword_infix_add), |_| {
+        BinOperator::AddOrAnd
+    })(s)
+}
+
+fn keyword_infix_sub(s: &str) -> ReadResult<&str> {
+    alt((tag("minus"), tag("without")))(s)
 }
 
 fn infix_sub_op(s: &str) -> ReadResult<BinOperator> {
-    map(
-        whitespace_delim(alt((tag("minus"), tag("without")))),
-        |_| BinOperator::Sub,
-    )(s)
+    map(whitespace_delim(keyword_infix_sub), |_| BinOperator::Sub)(s)
+}
+
+fn keyword_infix_mul(s: &str) -> ReadResult<&str> {
+    alt((tag("multiplied with"), tag("times")))(s)
 }
 
 fn infix_mul_op(s: &str) -> ReadResult<BinOperator> {
-    map(
-        whitespace_delim(alt((tag("multiplied with"), tag("times")))),
-        |_| BinOperator::Mul,
-    )(s)
+    map(whitespace_delim(keyword_infix_mul), |_| BinOperator::Mul)(s)
+}
+
+fn keyword_infix_div(s: &str) -> ReadResult<&str> {
+    alt((tag("divided by"), tag("over")))(s)
 }
 
 fn infix_div_op(s: &str) -> ReadResult<BinOperator> {
-    map(
-        whitespace_delim(alt((tag("divided by"), tag("over")))),
-        |_| BinOperator::Div,
-    )(s)
+    map(whitespace_delim(keyword_infix_div), |_| BinOperator::Div)(s)
 }
 
 fn prefix_add(s: &str) -> ReadResult<Expr> {
