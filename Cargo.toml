@@ -1,11 +1,12 @@
 [package]
-name = "fimpp"
+name = "sparkle"
 version = "0.1.0"
 authors = ["Evan Tatarka <evan@tatarka.me>"]
 edition = "2018"
 
 [[bin]]
-name = "fimpp"
+name = "sparkle"
+path = "src/mane.rs"
 
 [dependencies]
 nom = "5.0.1"

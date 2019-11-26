@@ -10,6 +10,10 @@ References:
 - https://docs.google.com/document/d/1gU-ZROmZu0Xitw_pfC1ktCDvJH5rM85TxxQf5pg_xmg/edit
 - https://github.com/avian2/fimpp
 
+# Why Sparkle?
+
+It was the codename of official 1.0 version, I like it better than FiM++, it's
+easier to say.
 
 # Design decisions
 

@@ -33,7 +33,7 @@ const TARGET_HOST: &str = TARGET_WINDOWS;
 const HELP_TEXT: &str = "FiM++ 1.0
 
 USAGE:
-    fimpp [SUBCOMMAND] <REPORT> [OPTIONS]
+    sparkle [SUBCOMMAND] <REPORT> [OPTIONS]
 
 ARGS:
    REPORT the report to send
@@ -49,7 +49,7 @@ const HELP_TEXT_SEND: &str = "FiM++ 1.0
 Sends (compiles) the report
 
 USAGE:
-    fimpp send <REPORT> [to TARGET]
+    sparkle send <REPORT> [to TARGET]
 
 ARGS:
    REPORT the report to send
@@ -60,7 +60,7 @@ const HELP_TEXT_GALLOP: &str = "FiM++ 1.0
 Executes the report
 
 USAGE:
-    fimpp gallop <REPORT>
+    sparkle gallop <REPORT>
 
 ARGS:
    REPORT the report to execute";
@@ -70,7 +70,7 @@ const HELP_TEXT_PROOFREAD: &str = "FiM++ 1.0
 Prints out ir of the report to aid with debugging
 
 USAGE:
-    fimpp proofread <REPORT>
+    sparkle proofread <REPORT>
 
 ARGS:
    REPORT the report to process";

@@ -7,7 +7,7 @@ type TestResult = Result<(), CargoError>;
 
 #[test]
 fn hello_canterlot() -> TestResult {
-    let mut cmd = Command::cargo_bin("fimpp")?;
+    let mut cmd = Command::cargo_bin("sparkle")?;
 
     cmd.arg("gallop").arg("examples/hello_canterlot.fpp");
 
@@ -18,7 +18,7 @@ fn hello_canterlot() -> TestResult {
 
 #[test]
 fn say_hello_to_everypony() -> TestResult {
-    let mut cmd = Command::cargo_bin("fimpp")?;
+    let mut cmd = Command::cargo_bin("sparkle")?;
 
     cmd.arg("gallop").arg("examples/hello_everypony.fpp");
 
@@ -35,7 +35,7 @@ fn say_hello_to_everypony() -> TestResult {
 
 #[test]
 fn math() -> TestResult {
-    let mut cmd = Command::cargo_bin("fimpp")?;
+    let mut cmd = Command::cargo_bin("sparkle")?;
 
     cmd.arg("gallop").arg("examples/math.fpp");
 
@@ -54,7 +54,7 @@ fn math() -> TestResult {
 
 #[test]
 fn logic() -> TestResult {
-    let mut cmd = Command::cargo_bin("fimpp")?;
+    let mut cmd = Command::cargo_bin("sparkle")?;
 
     cmd.arg("gallop").arg("examples/logic.fpp");
 
@@ -74,7 +74,7 @@ fn logic() -> TestResult {
 
 #[test]
 fn variables() -> TestResult {
-    let mut cmd = Command::cargo_bin("fimpp")?;
+    let mut cmd = Command::cargo_bin("sparkle")?;
 
     cmd.arg("gallop").arg("examples/variables.fpp");
 
@@ -90,7 +90,7 @@ fn variables() -> TestResult {
 
 #[test]
 fn branches() -> TestResult {
-    let mut cmd = Command::cargo_bin("fimpp")?;
+    let mut cmd = Command::cargo_bin("sparkle")?;
 
     cmd.arg("gallop").arg("examples/branches.fpp");
 
@@ -101,7 +101,7 @@ fn branches() -> TestResult {
 
 #[test]
 fn sends_hello_canterlot() -> TestResult {
-    let mut cmd = Command::cargo_bin("fimpp")?;
+    let mut cmd = Command::cargo_bin("sparkle")?;
 
     cmd.arg("send").arg("examples/hello_canterlot.fpp");
 
