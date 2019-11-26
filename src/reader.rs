@@ -269,9 +269,10 @@ fn if_statement(s: &str) -> ReadResult<Statement> {
         tuple((
             terminated(if_declaration, whitespace0),
             many0(statement),
+            opt(preceded(else_declaration, many0(statement))),
             if_closing,
         )),
-        |(cond, if_, _)| Statement::If(cond, if_, vec![]),
+        |(cond, if_, else_, _)| Statement::If(cond, if_, else_.unwrap_or_else(|| vec![])),
     )(s)
 }
 
@@ -285,6 +286,13 @@ fn if_declaration(s: &str) -> ReadResult<Expr> {
             ),
         ),
         |cond| cond,
+    )(s)
+}
+
+fn else_declaration(s: &str) -> ReadResult<&str> {
+    terminated(
+        terminated(alt((tag("Or else"), tag("Otherwise"))), punctuation),
+        whitespace0,
     )(s)
 }
 
@@ -966,5 +974,20 @@ fn parses_if_else_statement() {
                 vec![],
             )
         ))
-    )
+    );
+    assert_eq!(
+        statement("When true, I said \"Always be honest\". Otherwise, I said \"Never be honest\". That's what I would do."),
+        Ok((
+            "",
+            Statement::If(
+                Expr::Val(Value::Lit(Literal::Boolean(true))),
+                vec![Statement::Print(Expr::Val(Value::Lit(Literal::Chars(
+                    "Always be honest"
+                ))))],
+                vec![Statement::Print(Expr::Val(Value::Lit(Literal::Chars(
+                    "Never be honest"
+                ))))],
+            )
+        ))
+    );
 }
