@@ -29,7 +29,13 @@ ex: `1 plus 1 times 2` gives `4`.
 
 No where does it say how booleans should be represented when printed. Decided to go with `yes/no`.
 
+## Variable Declaration
+
+Added the ability to omit the type when declaring with a value. The type can be inferred by the value.
+ex: `Did you know that Spike's age is 10?`. This often reads better.
+
 ## Variable Assignment
 
 It's unclear what's allowed on the right side of a variable assignment. I went with an expression as there should be no
 ambiguity parsing that, much like printing. ex: `Spike's age is now 10 plus 1`.
+

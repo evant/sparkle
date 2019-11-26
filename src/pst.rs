@@ -10,7 +10,7 @@ pub struct Paragraph<'a> {
 #[derive(Debug, PartialEq)]
 pub enum Statement<'a> {
     Print(Expr<'a>),
-    Declare(Variable<'a>, Type, Option<Literal<'a>>, bool),
+    Declare(Variable<'a>, Option<Type>, Option<Expr<'a>>, bool),
     Assign(Variable<'a>, Expr<'a>),
     If(Expr<'a>, Vec<Statement<'a>>, Vec<Statement<'a>>),
 }

@@ -149,8 +149,8 @@ fn send_statement<'a, B: Backend>(
 ) -> Result<(), ReportError> {
     match statement {
         Statement::Print(expr) => send_print_statement(expr, sender, function_sender),
-        Statement::Declare(var, type_, lit, is_const) => {
-            send_declare_statement(var, *type_, lit, *is_const, sender, function_sender)
+        Statement::Declare(var, type_, expr, is_const) => {
+            send_declare_statement(var, *type_, expr, *is_const, sender, function_sender)
         }
         Statement::Assign(var, expr) => send_assign_statement(var, expr, sender, function_sender),
         Statement::If(cond, if_, else_) => send_if_else(cond, if_, else_, sender, function_sender),
@@ -224,12 +224,35 @@ fn send_print_statement<'a, B: Backend>(
 
 fn send_declare_statement<'a, B: Backend>(
     var: &'a pst::Variable<'a>,
-    type_: crate::types::Type,
-    lit: &Option<Literal<'a>>,
+    type_: Option<crate::types::Type>,
+    expr: &Option<Expr<'a>>,
     is_const: bool,
     sender: &mut Sender<B>,
     function_sender: &mut FunctionSender<'a>,
 ) -> Result<(), ReportError> {
+
+    let (type_, value) = match (type_, expr) {
+        (Some(type_), Some(expr)) => {
+            let (expr_type, value) = send_expression(expr, sender, function_sender)?;
+            // ensure type matches what's declared.
+            (type_.check(expr_type)?, value)
+        }
+        (Some(type_), None) => {
+            match type_ {
+                Chars => {
+                    let value = function_sender.builder.ins().null(sender.pointer_type);
+                    (Chars, value)
+                }
+                Number => send_number_literal(0f64, function_sender),
+                Boolean => send_boolean_literal(false, function_sender),
+            }
+        }
+        (None, Some(expr)) => {
+            send_expression(expr, sender, function_sender)?
+        }
+        _ => return Err(ReportError::TypeError("must declare type or value".to_owned()))
+    };
+
     let slot_size = ir_type(sender, type_);
 
     let slot = function_sender
@@ -238,22 +261,6 @@ fn send_declare_statement<'a, B: Backend>(
             StackSlotKind::ExplicitSlot,
             slot_size.bytes(),
         ));
-
-    let (_, value) = match lit {
-        Some(l) => {
-            let (l_type, value) = send_literal(l, sender, function_sender)?;
-            // ensure literal type matches what's declared.
-            (type_.check(l_type)?, value)
-        }
-        None => match type_ {
-            Chars => {
-                let value = function_sender.builder.ins().null(sender.pointer_type);
-                (Chars, value)
-            }
-            Number => send_number_literal(0f64, function_sender),
-            Boolean => send_boolean_literal(false, function_sender),
-        },
-    };
 
     function_sender.builder.ins().stack_store(value, slot, 0);
 
@@ -391,7 +398,7 @@ fn send_value<'a, B: Backend>(
     let result = match value {
         pst::Value::Lit(lit) => send_literal(lit, sender, function_sender)?,
         pst::Value::Var(var) => {
-            let var_data = &function_sender.vars[var];
+            let var_data = &function_sender.vars.get(var).unwrap_or_else(|| panic!("I didn't know '{}'", var.0));
             let v = function_sender
                 .builder
                 .ins()

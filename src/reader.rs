@@ -3,7 +3,7 @@ use nom::bytes::complete::{is_a, is_not, tag, take_till1, take_while};
 use nom::character::complete::space1;
 use nom::combinator::{complete, map, opt, recognize};
 use nom::error::{convert_error, ErrorKind, ParseError, VerboseError};
-use nom::multi::{fold_many0, many0, many1, separated_list};
+use nom::multi::{fold_many0, many0, many1, separated_list, separated_nonempty_list};
 use nom::number::complete::double;
 use nom::sequence::{delimited, pair, preceded, separated_pair, terminated, tuple};
 use nom::IResult;
@@ -55,7 +55,7 @@ fn print(s: &str) -> ReadResult<&str> {
 }
 
 fn identifier(s: &str) -> ReadResult<&str> {
-    recognize(separated_list(space1, word))(s)
+    recognize(separated_nonempty_list(space1, word))(s)
 }
 
 fn word(s: &str) -> ReadResult<&str> {
@@ -177,11 +177,11 @@ fn declare_statement(s: &str) -> ReadResult<Statement> {
                     }),
                     keyword_declare,
                 )),
-                declare_type,
-                opt(whitespace_delim(literal)),
+                opt(declare_type),
+                opt(whitespace_delim(expr)),
             )),
         ),
-        |(name, is_const, type_, lit)| Statement::Declare(Variable(name), type_, lit, is_const),
+        |(name, is_const, type_, expr)| Statement::Declare(Variable(name), type_, expr, is_const),
     )(s)
 }
 
@@ -196,43 +196,46 @@ fn declare_type(s: &str) -> ReadResult<Type> {
     alt((type_number, type_chars, type_boolean))(s)
 }
 
+fn keyword_type_number(s: &str) -> ReadResult<&str> {
+    recognize(separated_pair(
+        alt((tag("a"), tag("the"))),
+        whitespace0,
+        tag("number"),
+    ))(s)
+}
+
 fn type_number(s: &str) -> ReadResult<Type> {
-    map(
-        recognize(separated_pair(
-            alt((tag("a"), tag("the"))),
-            whitespace0,
-            tag("number"),
+    map(keyword_type_number, |_| Number)(s)
+}
+
+fn keyword_type_chars(s: &str) -> ReadResult<&str> {
+    recognize(separated_pair(
+        alt((tag("a"), tag("the"))),
+        whitespace0,
+        alt((
+            tag("word"),
+            tag("phrase"),
+            tag("sentence"),
+            tag("quote"),
+            tag("name"),
         )),
-        |_| Number,
-    )(s)
+    ))(s)
 }
 
 fn type_chars(s: &str) -> ReadResult<Type> {
-    map(
-        recognize(separated_pair(
-            alt((tag("a"), tag("the"))),
-            whitespace0,
-            alt((
-                tag("word"),
-                tag("phrase"),
-                tag("sentence"),
-                tag("quote"),
-                tag("name"),
-            )),
-        )),
-        |_| Chars,
-    )(s)
+    map(keyword_type_chars, |_| Chars)(s)
+}
+
+fn keyword_type_boolean(s: &str) -> ReadResult<&str> {
+    recognize(separated_pair(
+        alt((tag("a"), tag("the"))),
+        whitespace0,
+        alt((tag("logic"), tag("argument"))),
+    ))(s)
 }
 
 fn type_boolean(s: &str) -> ReadResult<Type> {
-    map(
-        recognize(separated_pair(
-            alt((tag("a"), tag("the"))),
-            whitespace0,
-            alt((tag("logic"), tag("argument"))),
-        )),
-        |_| Boolean,
-    )(s)
+    map(keyword_type_boolean, |_| Boolean)(s)
 }
 
 fn keyword_declare(s: &str) -> ReadResult<&str> {
@@ -482,8 +485,8 @@ fn prefix_xor(s: &str) -> ReadResult<Expr> {
 
 fn prefix_not(s: &str) -> ReadResult<Expr> {
     map(
-        preceded(terminated(tag("not"), whitespace0), value_lit),
-        |b| Expr::Not(b),
+        preceded(terminated(tag("not"), whitespace0), value),
+        Expr::Not,
     )(s)
 }
 
@@ -856,6 +859,10 @@ fn parses_not() {
         Ok(("", Expr::Not(Value::Lit(Literal::Boolean(true)))))
     );
     assert_eq!(
+        prefix_not("not a tree"),
+        Ok(("", Expr::Not(Value::Var(Variable("a tree")))))
+    );
+    assert_eq!(
         expr("not true and false"),
         Ok((
             "",
@@ -900,7 +907,7 @@ fn parses_declare_statement() {
             "",
             Statement::Declare(
                 Variable("the elements of harmony count"),
-                Number,
+                Some(Number),
                 None,
                 false
             )
@@ -912,20 +919,20 @@ fn parses_declare_statement() {
             "",
             Statement::Declare(
                 Variable("Applejack's hat"),
-                Chars,
-                Some(Literal::Chars("Talluah")),
+                Some(Chars),
+                Some(Expr::Val(Value::Lit(Literal::Chars("Talluah")))),
                 false
             )
         ))
     );
     assert_eq!(
-        statement("Did you know that Pinkie Pie always has the argument right?"),
+        statement("Did you know that Pinkie Pie always is right?"),
         Ok((
             "",
             Statement::Declare(
                 Variable("Pinkie Pie"),
-                Boolean,
-                Some(Literal::Boolean(true)),
+                None,
+                Some(Expr::Val(Value::Lit(Literal::Boolean(true)))),
                 true
             )
         ))

@@ -1,4 +1,5 @@
 use crate::error::ReportError;
+use crate::pst::Literal;
 use std::fmt::{Error, Formatter};
 
 #[derive(Debug, PartialEq, Eq, Copy, Clone)]
@@ -17,10 +18,7 @@ impl Type {
         *self == Type::Boolean
     }
 
-    pub fn check(
-        &self,
-        expected: Type,
-    ) -> Result<Type, ReportError> {
+    pub fn check(&self, expected: Type) -> Result<Type, ReportError> {
         self.type_check(expected)?;
         Ok(*self)
     }
@@ -44,6 +42,16 @@ impl Type {
                 "expected {} but got {}",
                 self, actual_type
             )))
+        }
+    }
+}
+
+impl Into<Type> for &Literal<'_> {
+    fn into(self) -> Type {
+        match self {
+            Literal::Chars(_) => Type::Chars,
+            Literal::Number(_) => Type::Number,
+            Literal::Boolean(_) => Type::Boolean,
         }
     }
 }
