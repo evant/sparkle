@@ -1,4 +1,4 @@
-Dear Princes Celestia: I can do logic!
+Dear Princess Celestia: I can do logic!
 
 Today I learned logic:
 I wrote yes and yes. (to get yes)

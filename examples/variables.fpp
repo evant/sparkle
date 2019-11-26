@@ -1,4 +1,4 @@
-Dear Princes Celestia: I can use variables.
+Dear Princess Celestia: I can use variables.
 
 Today I learned to use variables:
 Did you know that the elements of harmony count is a number?

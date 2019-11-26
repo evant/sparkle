@@ -1,4 +1,4 @@
-Dear Princes Celestia: I went to Canterlot!
+Dear Princess Celestia: I went to Canterlot!
 
 Today I learned how to say hello:
 I said "Hello, Canterlot!".

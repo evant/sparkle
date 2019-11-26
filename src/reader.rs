@@ -111,7 +111,7 @@ fn report(s: &str) -> ReadResult<Report> {
 fn report_declaration(s: &str) -> ReadResult<&str> {
     terminated(
         preceded(
-            preceded(tag("Dear Princes Celestia:"), whitespace0),
+            preceded(tag("Dear Princess Celestia:"), whitespace0),
             identifier,
         ),
         punctuation,
@@ -536,7 +536,7 @@ fn parses_identifier() {
 #[test]
 fn parses_report_declaration() {
     assert_eq!(
-        report_declaration("Dear Princes Celestia: An example letter."),
+        report_declaration("Dear Princess Celestia: An example letter."),
         Ok(("", "An example letter"))
     );
 }
@@ -627,7 +627,7 @@ fn parses_paragraph() {
 fn parses_report() {
     assert_eq!(
         report(
-            "Dear Princes Celestia: An example letter.
+            "Dear Princess Celestia: An example letter.
 
         Today I learned how to fly:
             I said \"Fly!\"!
