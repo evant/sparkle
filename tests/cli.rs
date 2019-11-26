@@ -89,6 +89,17 @@ fn variables() -> TestResult {
 }
 
 #[test]
+fn branches() -> TestResult {
+    let mut cmd = Command::cargo_bin("fimpp")?;
+
+    cmd.arg("gallop").arg("examples/branches.fpp");
+
+    cmd.assert().success().stdout("I want to be a tree\n");
+
+    Ok(())
+}
+
+#[test]
 fn sends_hello_canterlot() -> TestResult {
     let mut cmd = Command::cargo_bin("fimpp")?;
 

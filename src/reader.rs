@@ -143,7 +143,12 @@ fn paragraph_declaration(s: &str) -> ReadResult<&str> {
 fn statement(s: &str) -> ReadResult<Statement> {
     terminated(
         terminated(
-            alt((print_statement, declare_statement, assign_statement)),
+            alt((
+                print_statement,
+                declare_statement,
+                assign_statement,
+                if_statement,
+            )),
             punctuation,
         ),
         whitespace0,
@@ -257,6 +262,34 @@ fn keyword_assign(s: &str) -> ReadResult<&str> {
         tag("become"),
         tag("becomes"),
     ))(s)
+}
+
+fn if_statement(s: &str) -> ReadResult<Statement> {
+    map(
+        tuple((
+            terminated(if_declaration, whitespace0),
+            many0(statement),
+            if_closing,
+        )),
+        |(cond, if_, _)| Statement::If(cond, if_, vec![]),
+    )(s)
+}
+
+fn if_declaration(s: &str) -> ReadResult<Expr> {
+    map(
+        preceded(
+            terminated(alt((tag("If"), tag("When"))), whitespace0),
+            terminated(
+                terminated(expr, opt(preceded(whitespace0, tag("then")))),
+                punctuation,
+            ),
+        ),
+        |cond| cond,
+    )(s)
+}
+
+fn if_closing(s: &str) -> ReadResult<&str> {
+    terminated(tag("That's what I would do"), punctuation)(s)
 }
 
 fn expr(s: &str) -> ReadResult<Expr> {
@@ -466,7 +499,7 @@ fn false_(s: &str) -> ReadResult<Literal> {
 
 fn string(s: &str) -> ReadResult<Literal> {
     map(delimited(is_a("\""), is_not("\""), is_a("\"")), |s| {
-        Literal::String(s)
+        Literal::Chars(s)
     })(s)
 }
 
@@ -590,7 +623,7 @@ fn parses_paragraph() {
             Paragraph {
                 name: "how to fly",
                 closing_name: "how to fly",
-                statements: vec![Statement::Print(Expr::Val(Value::Lit(Literal::String(
+                statements: vec![Statement::Print(Expr::Val(Value::Lit(Literal::Chars(
                     "Fly!"
                 ))))],
             }
@@ -610,7 +643,7 @@ fn parses_paragraph() {
                 name: "how to fly",
                 closing_name: "how to fly",
                 statements: vec![
-                    Statement::Print(Expr::Val(Value::Lit(Literal::String("Fly1!")))),
+                    Statement::Print(Expr::Val(Value::Lit(Literal::Chars("Fly1!")))),
                     Statement::Print(Expr::BinOp(
                         BinOperator::AddOrAnd,
                         Box::new(Expr::Val(Value::Lit(Literal::Number(5f64)))),
@@ -643,7 +676,7 @@ fn parses_report() {
                 paragraphs: vec![Paragraph {
                     name: "how to fly",
                     closing_name: "how to fly",
-                    statements: vec![Statement::Print(Expr::Val(Value::Lit(Literal::String(
+                    statements: vec![Statement::Print(Expr::Val(Value::Lit(Literal::Chars(
                         "Fly!"
                     ))))],
                 }],
@@ -672,7 +705,7 @@ fn parses_multiline_comment() {
 
 #[test]
 fn parses_literal() {
-    assert_eq!(literal("\"string\""), Ok(("", Literal::String("string"))));
+    assert_eq!(literal("\"string\""), Ok(("", Literal::Chars("string"))));
     assert_eq!(literal("12"), Ok(("", Literal::Number(12f64))));
     assert_eq!(
         literal("the number -1.6"),
@@ -872,7 +905,7 @@ fn parses_declare_statement() {
             Statement::Declare(
                 Variable("Applejack's hat"),
                 Chars,
-                Some(Literal::String("Talluah")),
+                Some(Literal::Chars("Talluah")),
                 false
             )
         ))
@@ -917,4 +950,21 @@ fn parses_assign_statement() {
             )
         ))
     );
+}
+
+#[test]
+fn parses_if_else_statement() {
+    assert_eq!(
+        statement("When true, I said \"Always be honest\". That's what I would do."),
+        Ok((
+            "",
+            Statement::If(
+                Expr::Val(Value::Lit(Literal::Boolean(true))),
+                vec![Statement::Print(Expr::Val(Value::Lit(Literal::Chars(
+                    "Always be honest"
+                ))))],
+                vec![],
+            )
+        ))
+    )
 }

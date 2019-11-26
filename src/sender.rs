@@ -18,6 +18,7 @@ use crate::pst::{BinOperator, Expr, Literal, Paragraph, Report, Statement};
 use crate::types::Type::{Boolean, Chars, Number};
 use cranelift::codegen::ir::StackSlot;
 use std::collections::HashMap;
+use cranelift::prelude::settings::detail::Detail::Bool;
 
 pub fn send_out<'a>(report: &'a Report, name: &str, target: &str) -> Result<(), ReportError> {
     let mut sender = faerie_sender(name, target)?;
@@ -152,6 +153,7 @@ fn send_statement<'a, B: Backend>(
             send_declare_statement(var, *type_, lit, *is_const, sender, function_sender)
         }
         Statement::Assign(var, expr) => send_assign_statement(var, expr, sender, function_sender),
+        Statement::If(cond, if_, else_) => send_if_else(cond, if_, else_, sender, function_sender),
     }
 }
 
@@ -241,7 +243,7 @@ fn send_declare_statement<'a, B: Backend>(
         Some(l) => {
             let (l_type, value) = send_literal(l, sender, function_sender)?;
             // ensure literal type matches what's declared.
-            type_.check(l_type, || value)?
+            (type_.check(l_type)?, value)
         }
         None => match type_ {
             Chars => {
@@ -280,12 +282,46 @@ fn send_assign_statement<'a, B: Backend>(
         return Err(ReportError::TypeError(format!("Nopony can change what is always true: {}", var.0)));
     }
 
-    type_.check(expr_type, || {
-        function_sender
-            .builder
-            .ins()
-            .stack_store(expr_value, slot, 0)
-    })?;
+    type_.check(expr_type)?;
+    function_sender
+        .builder
+        .ins()
+        .stack_store(expr_value, slot, 0);
+
+    Ok(())
+}
+
+fn send_if_else<'a, B: Backend>(
+    cond: &Expr<'a>,
+    if_: &'a[Statement<'a>],
+    else_: &'a[Statement<'a>],
+    sender: &mut Sender<B>,
+    function_sender: &mut FunctionSender<'a>
+) -> Result<(), ReportError> {
+    let(expr_type, expr_value) = send_expression(cond, sender, function_sender)?;
+    Boolean.check(expr_type)?;
+
+    let else_block = function_sender.builder.create_ebb();
+    let merge_block = function_sender.builder.create_ebb();
+    function_sender.builder.ins().brz(expr_value, else_block, &[]);
+
+    for statement in if_ {
+        send_statement(statement, sender, function_sender)?;
+    }
+
+    function_sender.builder.ins().jump(merge_block, &[]);
+
+    function_sender.builder.switch_to_block(else_block);
+    function_sender.builder.seal_block(else_block);
+
+    for statement in else_ {
+        send_statement(statement, sender, function_sender)?;
+    }
+
+    function_sender.builder.ins().jump(merge_block, &[]);
+
+    function_sender.builder.switch_to_block(merge_block);
+    function_sender.builder.seal_block(merge_block);
 
     Ok(())
 }
@@ -334,13 +370,12 @@ fn send_expression<'a, B: Backend>(
         Expr::Not(val) => {
             let (type_, value) = send_value(val, sender, function_sender)?;
 
-            Boolean.check(type_, || {
-                let b = function_sender
-                    .builder
-                    .ins()
-                    .icmp_imm(IntCC::Equal, value, 0);
-                function_sender.builder.ins().bint(types::I32, b)
-            })?
+            Boolean.check(type_)?;
+            let b = function_sender
+                .builder
+                .ins()
+                .icmp_imm(IntCC::Equal, value, 0);
+            (type_, function_sender.builder.ins().bint(types::I32, b))
         }
         Expr::Val(val) => send_value(val, sender, function_sender)?,
     };
@@ -374,7 +409,7 @@ fn send_literal<'a, B: Backend>(
     function_sender: &mut FunctionSender<'a>,
 ) -> Result<(crate::types::Type, Value), ReportError> {
     let result = match lit {
-        Literal::String(string) => {
+        Literal::Chars(string) => {
             create_constant_string(string, sender)?;
             (
                 crate::types::Type::Chars,

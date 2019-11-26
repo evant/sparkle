@@ -17,13 +17,12 @@ impl Type {
         *self == Type::Boolean
     }
 
-    pub fn check<T>(
+    pub fn check(
         &self,
         expected: Type,
-        f: impl FnOnce() -> T,
-    ) -> Result<(Type, T), ReportError> {
+    ) -> Result<Type, ReportError> {
         self.type_check(expected)?;
-        Ok((*self, f()))
+        Ok(*self)
     }
 
     pub fn check_bin<T>(

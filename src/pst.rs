@@ -1,4 +1,3 @@
-use crate::pst::Value::Lit;
 use crate::types::Type;
 
 #[derive(Debug, PartialEq)]
@@ -13,6 +12,7 @@ pub enum Statement<'a> {
     Print(Expr<'a>),
     Declare(Variable<'a>, Type, Option<Literal<'a>>, bool),
     Assign(Variable<'a>, Expr<'a>),
+    If(Expr<'a>, Vec<Statement<'a>>, Vec<Statement<'a>>),
 }
 
 #[derive(Debug, PartialEq)]
@@ -24,7 +24,7 @@ pub struct Report<'a> {
 
 #[derive(Debug, PartialEq, Clone)]
 pub enum Literal<'a> {
-    String(&'a str),
+    Chars(&'a str),
     Number(f64),
     Boolean(bool),
 }
