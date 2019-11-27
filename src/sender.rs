@@ -383,30 +383,29 @@ fn send_expression<'a, B: Backend>(
                 BinOperator::EitherOr => Boolean.check_bin(left_type, right_type, || {
                     function_sender.builder.ins().bxor(left_value, right_value)
                 }),
-                BinOperator::Eq => {
+                BinOperator::Equal => {
                     let type_ = left_type.check(right_type)?;
-                    Ok((
-                        Boolean,
-                        match type_ {
-                            Chars => {
-                                let result = compare_strings(left_value, right_value, sender, &mut function_sender.builder)?;
-                                function_sender
-                                    .builder
-                                    .ins()
-                                    .icmp_imm(IntCC::Equal, result, 0)
-                            }
-                            Number => function_sender.builder.ins().fcmp(
-                                FloatCC::Equal,
-                                left_value,
-                                right_value,
-                            ),
-                            Boolean => function_sender.builder.ins().icmp(
-                                IntCC::Equal,
-                                left_value,
-                                right_value,
-                            ),
-                        },
-                    ))
+                    send_comparison(type_, IntCC::Equal, FloatCC::Equal, left_value, right_value, sender, function_sender)
+                }
+                BinOperator::NotEqual => {
+                    let type_ = left_type.check(right_type)?;
+                    send_comparison(type_, IntCC::NotEqual, FloatCC::NotEqual, left_value, right_value, sender, function_sender)
+                }
+                BinOperator::LessThan => {
+                    let type_ = left_type.check(right_type)?;
+                    send_comparison(type_, IntCC::SignedLessThan, FloatCC::LessThan, left_value, right_value, sender, function_sender)
+                }
+                BinOperator::GreaterThan => {
+                    let type_ = left_type.check(right_type)?;
+                    send_comparison(type_, IntCC::SignedGreaterThan, FloatCC::GreaterThan, left_value, right_value, sender, function_sender)
+                }
+                BinOperator::LessThanOrEqual => {
+                    let type_ = left_type.check(right_type)?;
+                    send_comparison(type_, IntCC::SignedLessThanOrEqual, FloatCC::LessThanOrEqual, left_value, right_value, sender, function_sender)
+                }
+                BinOperator::GreaterThanOrEqual => {
+                    let type_ = left_type.check(right_type)?;
+                    send_comparison(type_, IntCC::SignedGreaterThanOrEqual, FloatCC::GreaterThanOrEqual, left_value, right_value, sender, function_sender)
                 }
             }?
         }
@@ -424,6 +423,42 @@ fn send_expression<'a, B: Backend>(
     };
 
     Ok(result)
+}
+
+fn send_comparison<'a, B: Backend>(
+    type_: crate::types::Type,
+    icc: IntCC,
+    fcc: FloatCC,
+    left_value: Value,
+    right_value: Value,
+    sender: &mut Sender<B>,
+    function_sender: &mut FunctionSender<'a>,
+) -> Result<(crate::types::Type, Value), ReportError>{
+    Ok((
+        Boolean,
+        match type_ {
+            Chars => {
+                let result = compare_strings(
+                    left_value,
+                    right_value,
+                    sender,
+                    &mut function_sender.builder,
+                )?;
+                function_sender
+                    .builder
+                    .ins()
+                    .icmp_imm(icc, result, 0)
+            }
+            Number => function_sender
+                .builder
+                .ins()
+                .fcmp(fcc, left_value, right_value),
+            Boolean => function_sender
+                .builder
+                .ins()
+                .icmp(icc, left_value, right_value),
+        },
+    ))
 }
 
 fn send_value<'a, B: Backend>(
@@ -496,6 +531,10 @@ fn create_constant_string<B: Backend>(
     string: &str,
     sender: &mut Sender<B>,
 ) -> Result<(), ReportError> {
+    if sender.constants.contains(string) {
+        return Ok(());
+    }
+
     // We need to append a null byte at the end for libc.
     let mut s: Vec<_> = string.bytes().collect();
     s.push(b'\0');
@@ -504,15 +543,12 @@ fn create_constant_string<B: Backend>(
         .module
         .declare_data(string, Linkage::Export, false, Option::None)?;
 
-    match sender.module.define_data(id, &sender.data_context) {
-        Ok(_) => {}
-        // Ignore duplicates, we can use the existing one.
-        Err(ModuleError::DuplicateDefinition(_)) => return Ok(()),
-        e => e?,
-    }
+    sender.module.define_data(id, &sender.data_context)?;
 
     sender.data_context.clear();
     sender.module.finalize_definitions();
+
+    sender.constants.insert(string.to_owned());
 
     Ok(())
 }
@@ -528,18 +564,13 @@ fn compare_strings<B: Backend>(
     sig.params.push(AbiParam::new(sender.pointer_type));
     sig.returns.push(AbiParam::new(types::I32));
 
-    let callee = sender.module.declare_function(
-        "strcmp",
-        Linkage::Import,
-        &sig,
-    )?;
-    let local_callee = sender.module.declare_func_in_func(
-        callee,
-        &mut builder.func,
-    );
-    let call = builder
-        .ins()
-        .call(local_callee, &[left_value, right_value]);
+    let callee = sender
+        .module
+        .declare_function("strcmp", Linkage::Import, &sig)?;
+    let local_callee = sender
+        .module
+        .declare_func_in_func(callee, &mut builder.func);
+    let call = builder.ins().call(local_callee, &[left_value, right_value]);
     let result = builder.inst_results(call)[0];
 
     Ok(result)
@@ -588,6 +619,7 @@ fn reference_constant_string<B: Backend>(
 struct Sender<B: Backend> {
     module: Module<B>,
     data_context: DataContext,
+    constants: HashSet<String>,
     pointer_type: Type,
 }
 
@@ -597,6 +629,7 @@ impl<B: Backend> Sender<B> {
         Sender {
             module,
             data_context: DataContext::new(),
+            constants: HashSet::new(),
             pointer_type,
         }
     }

@@ -105,7 +105,14 @@ fn comparisons() -> TestResult {
 
     cmd.arg("gallop").arg("examples/comparisons.fpp");
 
-    cmd.assert().success().stdout("yes\n");
+    cmd.assert().success().stdout(
+        "yes\n\
+         yes\n\
+         yes\n\
+         no\n\
+         yes\n\
+         yes\n"
+    );
 
     Ok(())
 }

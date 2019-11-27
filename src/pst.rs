@@ -47,7 +47,12 @@ pub enum BinOperator {
     Div,
     Or,
     EitherOr,
-    Eq,
+    Equal,
+    NotEqual,
+    LessThan,
+    GreaterThan,
+    LessThanOrEqual,
+    GreaterThanOrEqual,
 }
 
 #[derive(Debug, PartialEq, Clone)]

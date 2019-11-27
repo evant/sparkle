@@ -12,7 +12,6 @@ use crate::error::ReportError;
 use crate::pst::{BinOperator, Expr, Literal, Paragraph, Report, Statement, Value, Variable};
 use crate::types::Type;
 use crate::types::Type::{Boolean, Chars, Number};
-use crate::pst::Expr::BinOp;
 
 type ReadResult<'a, O> = IResult<&'a str, O, VerboseError<&'a str>>;
 
@@ -143,16 +142,13 @@ fn paragraph_declaration(s: &str) -> ReadResult<&str> {
 
 fn statement(s: &str) -> ReadResult<Statement> {
     terminated(
-        terminated(
-            alt((
-                print_statement,
-                declare_statement,
-                assign_statement,
-                if_statement,
-            )),
-            punctuation,
-        ),
-        whitespace0,
+        alt((
+            print_statement,
+            declare_statement,
+            assign_statement,
+            if_statement,
+        )),
+        tuple((whitespace0, punctuation, whitespace0)),
     )(s)
 }
 
@@ -350,20 +346,6 @@ where
     )
 }
 
-fn infix<'a, O1, O2, O3, P, V1, V2>(
-    operator: P,
-    left: V1,
-    right: V2,
-) -> impl Fn(&'a str) -> ReadResult<(O2, O3)>
-where
-    P: Fn(&'a str) -> ReadResult<O1>,
-    V1: Fn(&'a str) -> ReadResult<O2>,
-    V2: Fn(&'a str) -> ReadResult<O3>,
-{
-    let infix_delim = delimited(whitespace0, operator, whitespace0);
-    separated_pair(left, infix_delim, right)
-}
-
 fn infix_term(s: &str) -> ReadResult<Expr> {
     let (s, init) = value_expr(s)?;
     fold_many0(pair(infix_op, value_expr), init, |acc, (op, val)| {
@@ -383,6 +365,11 @@ fn infix_op(s: &str) -> ReadResult<BinOperator> {
         infix_div_op,
         infix_and_op,
         infix_or_op,
+        infix_lt_op,
+        infix_gt_op,
+        infix_lte_op,
+        infix_gte_op,
+        infix_neq_op,
         infix_eq_op,
     ))(s)
 }
@@ -426,7 +413,82 @@ fn keyword_infix_eq(s: &str) -> ReadResult<&str> {
 }
 
 fn infix_eq_op(s: &str) -> ReadResult<BinOperator> {
-    map(whitespace_delim(keyword_infix_eq), |_| BinOperator::Eq)(s)
+    map(whitespace_delim(keyword_infix_eq), |_| BinOperator::Equal)(s)
+}
+
+fn infix_neq_op(s: &str) -> ReadResult<BinOperator> {
+    map(
+        whitespace_delim(pair(
+            keyword_infix_eq,
+            alt((preceded(whitespace0, tag("not")), tag("n't"))),
+        )),
+        |_| BinOperator::NotEqual,
+    )(s)
+}
+
+fn infix_lt_op(s: &str) -> ReadResult<BinOperator> {
+    map(
+        whitespace_delim(pair(
+            keyword_infix_eq,
+            tuple((whitespace0, tag("less"), whitespace0, tag("than"))),
+        )),
+        |_| BinOperator::LessThan,
+    )(s)
+}
+
+fn infix_gt_op(s: &str) -> ReadResult<BinOperator> {
+    map(
+        whitespace_delim(pair(
+            keyword_infix_eq,
+            tuple((
+                whitespace0,
+                alt((tag("more"), tag("greater"))),
+                whitespace0,
+                tag("than"),
+            )),
+        )),
+        |_| BinOperator::GreaterThan,
+    )(s)
+}
+
+fn infix_lte_op(s: &str) -> ReadResult<BinOperator> {
+    map(
+        whitespace_delim(pair(
+            keyword_infix_eq,
+            tuple((
+                alt((
+                    preceded(whitespace0, tag("not")),
+                    preceded(whitespace0, tag("no")),
+                    tag("n't"),
+                )),
+                whitespace0,
+                alt((tag("more"), tag("greater"))),
+                whitespace0,
+                tag("than"),
+            )),
+        )),
+        |_| BinOperator::LessThanOrEqual,
+    )(s)
+}
+
+fn infix_gte_op(s: &str) -> ReadResult<BinOperator> {
+    map(
+        whitespace_delim(pair(
+            keyword_infix_eq,
+            tuple((
+                alt((
+                    preceded(whitespace0, tag("not")),
+                    preceded(whitespace0, tag("no")),
+                    tag("n't"),
+                )),
+                whitespace0,
+                tag("less"),
+                whitespace0,
+                tag("than"),
+            )),
+        )),
+        |_| BinOperator::GreaterThanOrEqual,
+    )(s)
 }
 
 fn prefix_add(s: &str) -> ReadResult<Expr> {
@@ -892,12 +954,80 @@ fn parses_comparison() {
         Ok((
             "",
             Expr::BinOp(
-                BinOperator::Eq,
+                BinOperator::Equal,
                 Box::new(Expr::Val(Value::Var(Variable("Rainbow Dash")))),
                 Box::new(Expr::Val(Value::Var(Variable("cool"))))
             )
         ))
     );
+    assert_eq!(
+        expr("Fluttershy isn't loud"),
+        Ok((
+            "",
+            Expr::BinOp(
+                BinOperator::NotEqual,
+                Box::new(Expr::Val(Value::Var(Variable("Fluttershy")))),
+                Box::new(Expr::Val(Value::Var(Variable("loud"))))
+            )
+        ))
+    );
+    assert_eq!(
+        expr("the number of cupcakes is less than 10"),
+        Ok((
+            "",
+            Expr::BinOp(
+                BinOperator::LessThan,
+                Box::new(Expr::Val(Value::Var(Variable("the number of cupcakes")))),
+                Box::new(Expr::Val(Value::Lit(Literal::Number(10f64))))
+            )
+        ))
+    );
+    assert_eq!(
+        expr("the number of pies is not less than 10"),
+        Ok((
+            "",
+            Expr::BinOp(
+                BinOperator::GreaterThanOrEqual,
+                Box::new(Expr::Val(Value::Var(Variable("the number of pies")))),
+                Box::new(Expr::Val(Value::Lit(Literal::Number(10f64))))
+            )
+        ))
+    );
+    assert_eq!(
+        expr("the number of cakes is more than 10"),
+        Ok((
+            "",
+            Expr::BinOp(
+                BinOperator::GreaterThan,
+                Box::new(Expr::Val(Value::Var(Variable("the number of cakes")))),
+                Box::new(Expr::Val(Value::Lit(Literal::Number(10f64))))
+            )
+        ))
+    );
+    assert_eq!(
+        expr("the number of cute animals isn't greater than 100"),
+        Ok((
+            "",
+            Expr::BinOp(
+                BinOperator::LessThanOrEqual,
+                Box::new(Expr::Val(Value::Var(Variable(
+                    "the number of cute animals"
+                )))),
+                Box::new(Expr::Val(Value::Lit(Literal::Number(100f64))))
+            )
+        ))
+    );
+    assert_eq!(
+        expr("Applejack has more than 50"),
+        Ok((
+            "",
+            Expr::BinOp(
+                BinOperator::GreaterThan,
+                Box::new(Expr::Val(Value::Var(Variable("Applejack")))),
+                Box::new(Expr::Val(Value::Lit(Literal::Number(50f64))))
+            )
+        ))
+    )
 }
 
 #[test]
