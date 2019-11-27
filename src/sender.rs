@@ -1,4 +1,4 @@
-use std::fs::{File, read_to_string};
+use std::fs::{read_to_string, File};
 
 use std::mem;
 use std::str::FromStr;
@@ -8,7 +8,9 @@ use cranelift::prelude::settings::{self, Configurable};
 use cranelift::prelude::*;
 use cranelift::prelude::{isa, AbiParam, FunctionBuilder, FunctionBuilderContext};
 use cranelift_faerie::{FaerieBackend, FaerieBuilder, FaerieTrapCollection};
-use cranelift_module::{default_libcall_names, Backend, DataContext, FuncId, Linkage, Module};
+use cranelift_module::{
+    default_libcall_names, Backend, DataContext, FuncId, Linkage, Module, ModuleError,
+};
 use cranelift_simplejit::{SimpleJITBackend, SimpleJITBuilder};
 use target_lexicon::Triple;
 
@@ -17,8 +19,8 @@ use crate::pst;
 use crate::pst::{BinOperator, Expr, Literal, Paragraph, Report, Statement};
 use crate::types::Type::{Boolean, Chars, Number};
 use cranelift::codegen::ir::StackSlot;
-use std::collections::HashMap;
 use cranelift::prelude::settings::detail::Detail::Bool;
+use std::collections::{HashMap, HashSet};
 
 pub fn send_out<'a>(report: &'a Report, name: &str, target: &str) -> Result<(), ReportError> {
     let mut sender = faerie_sender(name, target)?;
@@ -230,27 +232,26 @@ fn send_declare_statement<'a, B: Backend>(
     sender: &mut Sender<B>,
     function_sender: &mut FunctionSender<'a>,
 ) -> Result<(), ReportError> {
-
     let (type_, value) = match (type_, expr) {
         (Some(type_), Some(expr)) => {
             let (expr_type, value) = send_expression(expr, sender, function_sender)?;
             // ensure type matches what's declared.
             (type_.check(expr_type)?, value)
         }
-        (Some(type_), None) => {
-            match type_ {
-                Chars => {
-                    let value = function_sender.builder.ins().null(sender.pointer_type);
-                    (Chars, value)
-                }
-                Number => send_number_literal(0f64, function_sender),
-                Boolean => send_boolean_literal(false, function_sender),
+        (Some(type_), None) => match type_ {
+            Chars => {
+                let value = function_sender.builder.ins().null(sender.pointer_type);
+                (Chars, value)
             }
+            Number => send_number_literal(0f64, function_sender),
+            Boolean => send_boolean_literal(false, function_sender),
+        },
+        (None, Some(expr)) => send_expression(expr, sender, function_sender)?,
+        _ => {
+            return Err(ReportError::TypeError(
+                "must declare type or value".to_owned(),
+            ))
         }
-        (None, Some(expr)) => {
-            send_expression(expr, sender, function_sender)?
-        }
-        _ => return Err(ReportError::TypeError("must declare type or value".to_owned()))
     };
 
     let slot_size = ir_type(sender, type_);
@@ -283,10 +284,17 @@ fn send_assign_statement<'a, B: Backend>(
     function_sender: &mut FunctionSender<'a>,
 ) -> Result<(), ReportError> {
     let (expr_type, expr_value) = send_expression(expr, sender, function_sender)?;
-    let VarData{ type_, is_const, slot} = function_sender.vars[var];
+    let VarData {
+        type_,
+        is_const,
+        slot,
+    } = function_sender.vars[var];
 
     if is_const {
-        return Err(ReportError::TypeError(format!("Nopony can change what is always true: {}", var.0)));
+        return Err(ReportError::TypeError(format!(
+            "Nopony can change what is always true: {}",
+            var.0
+        )));
     }
 
     type_.check(expr_type)?;
@@ -300,17 +308,20 @@ fn send_assign_statement<'a, B: Backend>(
 
 fn send_if_else<'a, B: Backend>(
     cond: &Expr<'a>,
-    if_: &'a[Statement<'a>],
-    else_: &'a[Statement<'a>],
+    if_: &'a [Statement<'a>],
+    else_: &'a [Statement<'a>],
     sender: &mut Sender<B>,
-    function_sender: &mut FunctionSender<'a>
+    function_sender: &mut FunctionSender<'a>,
 ) -> Result<(), ReportError> {
-    let(expr_type, expr_value) = send_expression(cond, sender, function_sender)?;
+    let (expr_type, expr_value) = send_expression(cond, sender, function_sender)?;
     Boolean.check(expr_type)?;
 
     let else_block = function_sender.builder.create_ebb();
     let merge_block = function_sender.builder.create_ebb();
-    function_sender.builder.ins().brz(expr_value, else_block, &[]);
+    function_sender
+        .builder
+        .ins()
+        .brz(expr_value, else_block, &[]);
 
     for statement in if_ {
         send_statement(statement, sender, function_sender)?;
@@ -372,6 +383,31 @@ fn send_expression<'a, B: Backend>(
                 BinOperator::EitherOr => Boolean.check_bin(left_type, right_type, || {
                     function_sender.builder.ins().bxor(left_value, right_value)
                 }),
+                BinOperator::Eq => {
+                    let type_ = left_type.check(right_type)?;
+                    Ok((
+                        Boolean,
+                        match type_ {
+                            Chars => {
+                                let result = compare_strings(left_value, right_value, sender, &mut function_sender.builder)?;
+                                function_sender
+                                    .builder
+                                    .ins()
+                                    .icmp_imm(IntCC::Equal, result, 0)
+                            }
+                            Number => function_sender.builder.ins().fcmp(
+                                FloatCC::Equal,
+                                left_value,
+                                right_value,
+                            ),
+                            Boolean => function_sender.builder.ins().icmp(
+                                IntCC::Equal,
+                                left_value,
+                                right_value,
+                            ),
+                        },
+                    ))
+                }
             }?
         }
         Expr::Not(val) => {
@@ -398,11 +434,15 @@ fn send_value<'a, B: Backend>(
     let result = match value {
         pst::Value::Lit(lit) => send_literal(lit, sender, function_sender)?,
         pst::Value::Var(var) => {
-            let var_data = &function_sender.vars.get(var).unwrap_or_else(|| panic!("I didn't know '{}'", var.0));
-            let v = function_sender
-                .builder
-                .ins()
-                .stack_load(ir_type(sender, var_data.type_), var_data.slot, 0);
+            let var_data = &function_sender
+                .vars
+                .get(var)
+                .unwrap_or_else(|| panic!("I didn't know '{}'", var.0));
+            let v = function_sender.builder.ins().stack_load(
+                ir_type(sender, var_data.type_),
+                var_data.slot,
+                0,
+            );
             (var_data.type_, v)
         }
     };
@@ -463,11 +503,46 @@ fn create_constant_string<B: Backend>(
     let id = sender
         .module
         .declare_data(string, Linkage::Export, false, Option::None)?;
-    sender.module.define_data(id, &sender.data_context)?;
+
+    match sender.module.define_data(id, &sender.data_context) {
+        Ok(_) => {}
+        // Ignore duplicates, we can use the existing one.
+        Err(ModuleError::DuplicateDefinition(_)) => return Ok(()),
+        e => e?,
+    }
+
     sender.data_context.clear();
     sender.module.finalize_definitions();
 
     Ok(())
+}
+
+fn compare_strings<B: Backend>(
+    left_value: Value,
+    right_value: Value,
+    sender: &mut Sender<B>,
+    builder: &mut FunctionBuilder,
+) -> Result<Value, ReportError> {
+    let mut sig = sender.module.make_signature();
+    sig.params.push(AbiParam::new(sender.pointer_type));
+    sig.params.push(AbiParam::new(sender.pointer_type));
+    sig.returns.push(AbiParam::new(types::I32));
+
+    let callee = sender.module.declare_function(
+        "strcmp",
+        Linkage::Import,
+        &sig,
+    )?;
+    let local_callee = sender.module.declare_func_in_func(
+        callee,
+        &mut builder.func,
+    );
+    let call = builder
+        .ins()
+        .call(local_callee, &[left_value, right_value]);
+    let result = builder.inst_results(call)[0];
+
+    Ok(result)
 }
 
 fn float_to_string<B: Backend>(

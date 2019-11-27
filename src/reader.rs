@@ -12,6 +12,7 @@ use crate::error::ReportError;
 use crate::pst::{BinOperator, Expr, Literal, Paragraph, Report, Statement, Value, Variable};
 use crate::types::Type;
 use crate::types::Type::{Boolean, Chars, Number};
+use crate::pst::Expr::BinOp;
 
 type ReadResult<'a, O> = IResult<&'a str, O, VerboseError<&'a str>>;
 
@@ -382,6 +383,7 @@ fn infix_op(s: &str) -> ReadResult<BinOperator> {
         infix_div_op,
         infix_and_op,
         infix_or_op,
+        infix_eq_op,
     ))(s)
 }
 
@@ -417,6 +419,14 @@ fn keyword_infix_div(s: &str) -> ReadResult<&str> {
 
 fn infix_div_op(s: &str) -> ReadResult<BinOperator> {
     map(whitespace_delim(keyword_infix_div), |_| BinOperator::Div)(s)
+}
+
+fn keyword_infix_eq(s: &str) -> ReadResult<&str> {
+    alt((tag("is"), tag("was"), tag("has"), tag("had")))(s)
+}
+
+fn infix_eq_op(s: &str) -> ReadResult<BinOperator> {
+    map(whitespace_delim(keyword_infix_eq), |_| BinOperator::Eq)(s)
 }
 
 fn prefix_add(s: &str) -> ReadResult<Expr> {
@@ -870,6 +880,21 @@ fn parses_not() {
                 BinOperator::AddOrAnd,
                 Box::new(Expr::Not(Value::Lit(Literal::Boolean(true)))),
                 Box::new(Expr::Val(Value::Lit(Literal::Boolean(false)))),
+            )
+        ))
+    );
+}
+
+#[test]
+fn parses_comparison() {
+    assert_eq!(
+        expr("Rainbow Dash is cool"),
+        Ok((
+            "",
+            Expr::BinOp(
+                BinOperator::Eq,
+                Box::new(Expr::Val(Value::Var(Variable("Rainbow Dash")))),
+                Box::new(Expr::Val(Value::Var(Variable("cool"))))
             )
         ))
     );

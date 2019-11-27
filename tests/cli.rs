@@ -100,6 +100,17 @@ fn branches() -> TestResult {
 }
 
 #[test]
+fn comparisons() -> TestResult {
+    let mut cmd = Command::cargo_bin("sparkle")?;
+
+    cmd.arg("gallop").arg("examples/comparisons.fpp");
+
+    cmd.assert().success().stdout("yes\n");
+
+    Ok(())
+}
+
+#[test]
 fn sends_hello_canterlot() -> TestResult {
     let mut cmd = Command::cargo_bin("sparkle")?;
 

@@ -47,6 +47,7 @@ pub enum BinOperator {
     Div,
     Or,
     EitherOr,
+    Eq,
 }
 
 #[derive(Debug, PartialEq, Clone)]
