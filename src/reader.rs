@@ -169,6 +169,7 @@ fn statement(s: &str) -> ReadResult<Statement> {
             declare_statement,
             assign_statement,
             if_statement,
+            while_statement,
             increment_statement,
             decrement_statement,
         )),
@@ -354,6 +355,66 @@ fn keyword_if_closing(s: &str) -> ReadResult<&str> {
 
 fn if_closing(s: &str) -> ReadResult<&str> {
     terminated(keyword_if_closing, punctuation)(s)
+}
+
+fn while_statement(s: &str) -> ReadResult<Statement> {
+    map(
+        tuple((
+            terminated(while_declaration, whitespace0),
+            many0(statement),
+            while_closing,
+        )),
+        |(cond, body, _)| Statement::While(cond, body),
+    )(s)
+}
+
+fn keyword_declare_while(s: &str) -> ReadResult<&str> {
+    alt((
+        recognize(tuple((
+            tag("Here's"),
+            whitespace1,
+            tag("what"),
+            whitespace1,
+            tag("I"),
+            whitespace1,
+            tag("did"),
+            whitespace1,
+            tag("while"),
+        ))),
+        recognize(tuple((
+            tag("As"),
+            whitespace1,
+            tag("long"),
+            whitespace1,
+            tag("as"),
+        ))),
+    ))(s)
+}
+
+fn while_declaration(s: &str) -> ReadResult<Expr> {
+    map(
+        preceded(
+            terminated(keyword_declare_while, whitespace1),
+            terminated(expr, punctuation),
+        ),
+        |cond| cond,
+    )(s)
+}
+
+fn keyword_while_closing(s: &str) -> ReadResult<&str> {
+    recognize(tuple((
+        tag("That's"),
+        whitespace1,
+        tag("what"),
+        whitespace1,
+        tag("I"),
+        whitespace1,
+        tag("did"),
+    )))(s)
+}
+
+fn while_closing(s: &str) -> ReadResult<&str> {
+    terminated(keyword_while_closing, punctuation)(s)
 }
 
 fn keyword_increment(s: &str) -> ReadResult<&str> {
@@ -1286,6 +1347,22 @@ fn parses_if_else_statement() {
                 vec![Statement::Print(Expr::Val(Value::Lit(Literal::Chars(
                     "Never be honest"
                 ))))],
+            )
+        ))
+    );
+}
+
+#[test]
+fn parses_while_statement() {
+    assert_eq!(
+        statement("As long as true, I said \"I'm cool!\". That's what I did."),
+        Ok((
+            "",
+            Statement::While(
+                Expr::Val(Value::Lit(Literal::Boolean(true))),
+                vec![Statement::Print(Expr::Val(Value::Lit(Literal::Chars(
+                    "I'm cool!"
+                ))))]
             )
         ))
     );

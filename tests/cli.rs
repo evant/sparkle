@@ -96,7 +96,12 @@ fn branches() -> TestResult {
 
     cmd.arg("gallop").arg("examples/branches.fpp");
 
-    cmd.assert().success().stdout("I wish I were a tree\n");
+    cmd.assert().success().stdout(
+        "I wish I were a tree\n\
+         I'll help them\n\
+         I'll help them\n\
+         I'll help them\n",
+    );
 
     Ok(())
 }
@@ -113,7 +118,7 @@ fn comparisons() -> TestResult {
          yes\n\
          no\n\
          yes\n\
-         yes\n"
+         yes\n",
     );
 
     Ok(())

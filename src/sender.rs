@@ -155,9 +155,10 @@ fn send_statement<'a, B: Backend>(
             send_declare_statement(var, *type_, expr, *is_const, sender, function_sender)
         }
         Statement::Assign(var, expr) => send_assign_statement(var, expr, sender, function_sender),
-        Statement::If(cond, if_, else_) => send_if_else(cond, if_, else_, sender, function_sender),
         Statement::Increment(var) => send_increment_statement(var, sender, function_sender),
         Statement::Decrement(var) => send_decrement_statement(var, sender, function_sender),
+        Statement::If(cond, if_, else_) => send_if_else(cond, if_, else_, sender, function_sender),
+        Statement::While(cond, body) => send_while_statement(cond, body, sender, function_sender),
     }
 }
 
@@ -342,6 +343,38 @@ fn send_if_else<'a, B: Backend>(
 
     function_sender.builder.switch_to_block(merge_block);
     function_sender.builder.seal_block(merge_block);
+
+    Ok(())
+}
+
+fn send_while_statement<'a, B: Backend>(
+    cond: &Expr<'a>,
+    body: &'a [Statement<'a>],
+    sender: &mut Sender<B>,
+    function_sender: &mut FunctionSender<'a>,
+) -> Result<(), ReportError> {
+
+    let header_block = function_sender.builder.create_ebb();
+    let exit_block = function_sender.builder.create_ebb();
+    function_sender.builder.ins().jump(header_block, &[]);
+    function_sender.builder.switch_to_block(header_block);
+
+    let (expr_type, expr_value) = send_expression(cond, sender, function_sender)?;
+    Boolean.check(expr_type)?;
+
+    function_sender.builder.ins().brz(expr_value, exit_block, &[]);
+
+    for statement in body {
+        send_statement(statement, sender, function_sender)?;
+    }
+    function_sender.builder.ins().jump(header_block, &[]);
+
+    function_sender.builder.switch_to_block(exit_block);
+
+    // We've reached the bottom of the loop, so there will be no
+    // more backedges to the header to exits to the bottom.
+    function_sender.builder.seal_block(header_block);
+    function_sender.builder.seal_block(exit_block);
 
     Ok(())
 }
