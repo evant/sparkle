@@ -157,6 +157,7 @@ fn send_statement<'a, B: Backend>(
         Statement::Assign(var, expr) => send_assign_statement(var, expr, sender, function_sender),
         Statement::If(cond, if_, else_) => send_if_else(cond, if_, else_, sender, function_sender),
         Statement::Increment(var) => send_increment_statement(var, sender, function_sender),
+        Statement::Decrement(var) => send_decrement_statement(var, sender, function_sender),
     }
 }
 
@@ -350,6 +351,24 @@ fn send_increment_statement<'a, B: Backend>(
     sender: &mut Sender<B>,
     function_sender: &mut FunctionSender<'a>,
 ) -> Result<(), ReportError> {
+    send_update_statement(var, sender, function_sender, |builder, value| {
+        let one = builder.ins().f64const(1f64);
+        builder.ins().fadd(value, one)
+    })
+}
+
+fn send_decrement_statement<'a, B: Backend>(
+    var: &pst::Variable,
+    sender: &mut Sender<B>,
+    function_sender: &mut FunctionSender<'a>,
+) -> Result<(), ReportError> {
+    send_update_statement(var, sender, function_sender, |builder, value| {
+        let one = builder.ins().f64const(1f64);
+        builder.ins().fsub(value, one)
+    })
+}
+
+fn send_update_statement<'a, B: Backend>(var: &pst::Variable, sender:&mut Sender<B>, function_sender: &mut FunctionSender<'a>, f: impl FnOnce(&mut FunctionBuilder<'a>, Value) -> Value) -> Result<(), ReportError> {
     let var_data = &function_sender
         .vars
         .get(var)
@@ -360,8 +379,7 @@ fn send_increment_statement<'a, B: Backend>(
         .ins()
         .stack_load(types::F64, var_data.slot, 0);
 
-    let one = function_sender.builder.ins().f64const(1f64);
-    let new_value = function_sender.builder.ins().fadd(value, one);
+    let new_value = f(&mut function_sender.builder, value);
     function_sender
         .builder
         .ins()

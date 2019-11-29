@@ -36,6 +36,7 @@ fn keyword(s: &str) -> ReadResult<&str> {
         keyword_infix_mul,
         keyword_infix_div,
         keyword_increment,
+        keyword_decrement,
     ))(s)
 }
 
@@ -153,6 +154,7 @@ fn statement(s: &str) -> ReadResult<Statement> {
             assign_statement,
             if_statement,
             increment_statement,
+            decrement_statement,
         )),
         tuple((whitespace0, punctuation, whitespace0)),
     )(s)
@@ -320,6 +322,23 @@ fn increment_statement(s: &str) -> ReadResult<Statement> {
     map(
         terminated(var, pair(whitespace1, keyword_increment)),
         Statement::Increment,
+    )(s)
+}
+
+fn keyword_decrement(s: &str) -> ReadResult<&str> {
+    recognize(tuple((
+        tag("got"),
+        whitespace1,
+        tag("one"),
+        whitespace1,
+        tag("less"),
+    )))(s)
+}
+
+fn decrement_statement(s: &str) -> ReadResult<Statement> {
+    map(
+        terminated(var, pair(whitespace1, keyword_decrement)),
+        Statement::Decrement,
     )(s)
 }
 
@@ -1182,5 +1201,13 @@ fn parses_increment_statement() {
     assert_eq!(
         statement("Spike got one more."),
         Ok(("", Statement::Increment(Variable("Spike"))))
+    );
+}
+
+#[test]
+fn parses_decrement_statement() {
+    assert_eq!(
+        statement("Spike got one less."),
+        Ok(("", Statement::Decrement(Variable("Spike"))))
     );
 }

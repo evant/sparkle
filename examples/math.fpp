@@ -11,6 +11,8 @@ I wrote 1 plus 2 times 2. (to get 6)
 Did you know that Spike is 10?
 Spike got one more.
 I wrote Spike. (to get 11)
+Spike got one less.
+I wrote Spike. (to get 10)
 That's all about math.
 
 Your faithful student: Twilight Sparkle.
