@@ -19,6 +19,10 @@ easier to say.
 
 These are decisions made where places where unclear in the references.
 
+## Keywords
+
+Comments and newlines are allowed in keywords.
+
 ## Arithmetic Order of Operations.
 
 It says

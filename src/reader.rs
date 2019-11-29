@@ -3,10 +3,10 @@ use nom::bytes::complete::{is_a, is_not, tag, take_till1, take_while};
 use nom::character::complete::space1;
 use nom::combinator::{complete, map, opt, recognize};
 use nom::error::{convert_error, ErrorKind, ParseError, VerboseError};
-use nom::IResult;
 use nom::multi::{fold_many0, many0, many1, separated_list, separated_nonempty_list};
 use nom::number::complete::double;
 use nom::sequence::{delimited, pair, preceded, separated_pair, terminated, tuple};
+use nom::IResult;
 
 use crate::error::ReportError;
 use crate::pst::{BinOperator, Expr, Literal, Paragraph, Report, Statement, Value, Variable};
@@ -48,12 +48,11 @@ fn is_punctuation(s: char) -> bool {
 }
 
 fn print(s: &str) -> ReadResult<&str> {
-    alt((
-        tag("I remembered"),
-        tag("I said"),
-        tag("I sang"),
-        tag("I wrote"),
-    ))(s)
+    recognize(tuple((
+        tag("I"),
+        whitespace1,
+        alt((tag("remembered"), tag("said"), tag("sang"), tag("wrote"))),
+    )))(s)
 }
 
 fn identifier(s: &str) -> ReadResult<&str> {
@@ -73,8 +72,8 @@ fn word(s: &str) -> ReadResult<&str> {
 }
 
 fn whitespace_delim<'a, O, P>(parser: P) -> impl Fn(&'a str) -> ReadResult<O>
-    where
-        P: Fn(&'a str) -> ReadResult<O>,
+where
+    P: Fn(&'a str) -> ReadResult<O>,
 {
     delimited(whitespace0, parser, whitespace0)
 }
@@ -114,12 +113,19 @@ fn report(s: &str) -> ReadResult<Report> {
     )(s)
 }
 
+fn keyword_declare_report(s: &str) -> ReadResult<&str> {
+    recognize(tuple((
+        tag("Dear"),
+        whitespace1,
+        tag("Princess"),
+        whitespace1,
+        tag("Celestia:"),
+    )))(s)
+}
+
 fn report_declaration(s: &str) -> ReadResult<&str> {
     terminated(
-        preceded(
-            preceded(tag("Dear Princess Celestia:"), whitespace0),
-            identifier,
-        ),
+        preceded(preceded(keyword_declare_report, whitespace0), identifier),
         punctuation,
     )(s)
 }
@@ -139,9 +145,19 @@ fn paragraph(s: &str) -> ReadResult<Paragraph> {
     )(s)
 }
 
+fn keyword_declare_paragraph(s: &str) -> ReadResult<&str> {
+    recognize(tuple((
+        tag("Today"),
+        whitespace1,
+        tag("I"),
+        whitespace1,
+        tag("learned"),
+    )))(s)
+}
+
 fn paragraph_declaration(s: &str) -> ReadResult<&str> {
     terminated(
-        preceded(preceded(tag("Today I learned"), whitespace0), identifier),
+        preceded(preceded(keyword_declare_paragraph, whitespace0), identifier),
         punctuation,
     )(s)
 }
@@ -161,7 +177,7 @@ fn statement(s: &str) -> ReadResult<Statement> {
 }
 
 fn print_statement(s: &str) -> ReadResult<Statement> {
-    map(preceded(preceded(print, whitespace0), expr), |s| {
+    map(preceded(preceded(print, whitespace1), expr), |s| {
         Statement::Print(s)
     })(s)
 }
@@ -170,14 +186,26 @@ fn keyword_always(s: &str) -> ReadResult<&str> {
     tag("always")(s)
 }
 
+fn keyword_declare_statement(s: &str) -> ReadResult<&str> {
+    recognize(tuple((
+        tag("Did"),
+        whitespace1,
+        tag("you"),
+        whitespace1,
+        tag("know"),
+        whitespace1,
+        tag("that"),
+    )))(s)
+}
+
 fn declare_statement(s: &str) -> ReadResult<Statement> {
     map(
         preceded(
-            preceded(tag("Did you know that"), whitespace0),
+            preceded(keyword_declare_statement, whitespace1),
             tuple((
                 identifier,
                 whitespace_delim(terminated(
-                    map(opt(terminated(keyword_always, whitespace0)), |always| {
+                    map(opt(terminated(keyword_always, whitespace1)), |always| {
                         always.is_some()
                     }),
                     keyword_declare,
@@ -204,7 +232,7 @@ fn declare_type(s: &str) -> ReadResult<Type> {
 fn keyword_type_number(s: &str) -> ReadResult<&str> {
     recognize(separated_pair(
         alt((tag("a"), tag("the"))),
-        whitespace0,
+        whitespace1,
         tag("number"),
     ))(s)
 }
@@ -216,7 +244,7 @@ fn type_number(s: &str) -> ReadResult<Type> {
 fn keyword_type_chars(s: &str) -> ReadResult<&str> {
     recognize(separated_pair(
         alt((tag("a"), tag("the"))),
-        whitespace0,
+        whitespace1,
         alt((
             tag("word"),
             tag("phrase"),
@@ -234,7 +262,7 @@ fn type_chars(s: &str) -> ReadResult<Type> {
 fn keyword_type_boolean(s: &str) -> ReadResult<&str> {
     recognize(separated_pair(
         alt((tag("a"), tag("the"))),
-        whitespace0,
+        whitespace1,
         alt((tag("logic"), tag("argument"))),
     ))(s)
 }
@@ -259,12 +287,12 @@ fn keyword_assign(s: &str) -> ReadResult<&str> {
     alt((
         recognize(separated_pair(
             alt((tag("is"), tag("are"))),
-            whitespace0,
+            whitespace1,
             tag("now"),
         )),
         recognize(separated_pair(
             tag("now"),
-            whitespace0,
+            whitespace1,
             alt((tag("like"), tag("likes"))),
         )),
         tag("become"),
@@ -287,9 +315,9 @@ fn if_statement(s: &str) -> ReadResult<Statement> {
 fn if_declaration(s: &str) -> ReadResult<Expr> {
     map(
         preceded(
-            terminated(alt((tag("If"), tag("When"))), whitespace0),
+            terminated(alt((tag("If"), tag("When"))), whitespace1),
             terminated(
-                terminated(expr, opt(preceded(whitespace0, tag("then")))),
+                terminated(expr, opt(preceded(whitespace1, tag("then")))),
                 punctuation,
             ),
         ),
@@ -299,13 +327,33 @@ fn if_declaration(s: &str) -> ReadResult<Expr> {
 
 fn else_declaration(s: &str) -> ReadResult<&str> {
     terminated(
-        terminated(alt((tag("Or else"), tag("Otherwise"))), punctuation),
+        terminated(
+            alt((
+                recognize(tuple((tag("Or"), whitespace1, tag("else")))),
+                tag("Otherwise"),
+            )),
+            punctuation,
+        ),
         whitespace0,
     )(s)
 }
 
+fn keyword_if_closing(s: &str) -> ReadResult<&str> {
+    recognize(tuple((
+        tag("That's"),
+        whitespace1,
+        tag("what"),
+        whitespace1,
+        tag("I"),
+        whitespace1,
+        tag("would"),
+        whitespace1,
+        tag("do"),
+    )))(s)
+}
+
 fn if_closing(s: &str) -> ReadResult<&str> {
-    terminated(tag("That's what I would do"), punctuation)(s)
+    terminated(keyword_if_closing, punctuation)(s)
 }
 
 fn keyword_increment(s: &str) -> ReadResult<&str> {
@@ -376,11 +424,11 @@ fn prefix<'a, O1, O2, O3, P1, P2, V1, V2>(
     first: V1,
     second: V2,
 ) -> impl Fn(&'a str) -> ReadResult<(O2, O3)>
-    where
-        P1: Fn(&'a str) -> ReadResult<O1>,
-        P2: Fn(&'a str) -> ReadResult<O1>,
-        V1: Fn(&'a str) -> ReadResult<O2>,
-        V2: Fn(&'a str) -> ReadResult<O3>,
+where
+    P1: Fn(&'a str) -> ReadResult<O1>,
+    P2: Fn(&'a str) -> ReadResult<O1>,
+    V1: Fn(&'a str) -> ReadResult<O2>,
+    V2: Fn(&'a str) -> ReadResult<O3>,
 {
     preceded(
         terminated(op1, whitespace0),
@@ -417,7 +465,11 @@ fn infix_op(s: &str) -> ReadResult<BinOperator> {
 }
 
 fn keyword_infix_add(s: &str) -> ReadResult<&str> {
-    alt((tag("added to"), tag("plus"), tag("and")))(s)
+    alt((
+        recognize(tuple((tag("added"), whitespace1, tag("to")))),
+        tag("plus"),
+        tag("and"),
+    ))(s)
 }
 
 fn infix_add_op(s: &str) -> ReadResult<BinOperator> {
@@ -435,7 +487,10 @@ fn infix_sub_op(s: &str) -> ReadResult<BinOperator> {
 }
 
 fn keyword_infix_mul(s: &str) -> ReadResult<&str> {
-    alt((tag("multiplied with"), tag("times")))(s)
+    alt((
+        recognize(tuple((tag("multiplied"), whitespace1, tag("with")))),
+        tag("times"),
+    ))(s)
 }
 
 fn infix_mul_op(s: &str) -> ReadResult<BinOperator> {
@@ -443,7 +498,10 @@ fn infix_mul_op(s: &str) -> ReadResult<BinOperator> {
 }
 
 fn keyword_infix_div(s: &str) -> ReadResult<&str> {
-    alt((tag("divided by"), tag("over")))(s)
+    alt((
+        recognize(tuple((tag("divided"), whitespace1, tag("by")))),
+        tag("over"),
+    ))(s)
 }
 
 fn infix_div_op(s: &str) -> ReadResult<BinOperator> {
@@ -462,7 +520,7 @@ fn infix_neq_op(s: &str) -> ReadResult<BinOperator> {
     map(
         whitespace_delim(pair(
             keyword_infix_eq,
-            alt((preceded(whitespace0, tag("not")), tag("n't"))),
+            alt((preceded(whitespace1, tag("not")), tag("n't"))),
         )),
         |_| BinOperator::NotEqual,
     )(s)
@@ -472,7 +530,7 @@ fn infix_lt_op(s: &str) -> ReadResult<BinOperator> {
     map(
         whitespace_delim(pair(
             keyword_infix_eq,
-            tuple((whitespace0, tag("less"), whitespace0, tag("than"))),
+            tuple((whitespace1, tag("less"), whitespace1, tag("than"))),
         )),
         |_| BinOperator::LessThan,
     )(s)
@@ -483,9 +541,9 @@ fn infix_gt_op(s: &str) -> ReadResult<BinOperator> {
         whitespace_delim(pair(
             keyword_infix_eq,
             tuple((
-                whitespace0,
+                whitespace1,
                 alt((tag("more"), tag("greater"))),
-                whitespace0,
+                whitespace1,
                 tag("than"),
             )),
         )),
@@ -499,13 +557,13 @@ fn infix_lte_op(s: &str) -> ReadResult<BinOperator> {
             keyword_infix_eq,
             tuple((
                 alt((
-                    preceded(whitespace0, tag("not")),
-                    preceded(whitespace0, tag("no")),
+                    preceded(whitespace1, tag("not")),
+                    preceded(whitespace1, tag("no")),
                     tag("n't"),
                 )),
-                whitespace0,
+                whitespace1,
                 alt((tag("more"), tag("greater"))),
-                whitespace0,
+                whitespace1,
                 tag("than"),
             )),
         )),
@@ -519,13 +577,13 @@ fn infix_gte_op(s: &str) -> ReadResult<BinOperator> {
             keyword_infix_eq,
             tuple((
                 alt((
-                    preceded(whitespace0, tag("not")),
-                    preceded(whitespace0, tag("no")),
+                    preceded(whitespace1, tag("not")),
+                    preceded(whitespace1, tag("no")),
                     tag("n't"),
                 )),
-                whitespace0,
+                whitespace1,
                 tag("less"),
-                whitespace0,
+                whitespace1,
                 tag("than"),
             )),
         )),
@@ -544,7 +602,13 @@ fn prefix_sub(s: &str) -> ReadResult<Expr> {
     map(
         alt((
             prefix(
-                tag("the difference between"),
+                recognize(tuple((
+                    tag("the"),
+                    whitespace1,
+                    tag("difference"),
+                    whitespace1,
+                    tag("between"),
+                ))),
                 tag("and"),
                 value_expr,
                 value_expr,
@@ -564,7 +628,18 @@ fn prefix_mul(s: &str) -> ReadResult<Expr> {
                 value_expr,
                 value_expr,
             ),
-            prefix(tag("the product of"), tag("and"), value_expr, value_expr),
+            prefix(
+                recognize(tuple((
+                    tag("the"),
+                    whitespace1,
+                    tag("product"),
+                    whitespace1,
+                    tag("of"),
+                ))),
+                tag("and"),
+                value_expr,
+                value_expr,
+            ),
         )),
         |(left, right)| Expr::BinOp(BinOperator::Mul, Box::new(left), Box::new(right)),
     )(s)
@@ -630,23 +705,43 @@ fn string(s: &str) -> ReadResult<Literal> {
 
 fn number(s: &str) -> ReadResult<Literal> {
     map(
-        preceded(opt(terminated(tag("the number"), whitespace0)), double),
+        preceded(opt(terminated(keyword_type_number, whitespace1)), double),
         Literal::Number,
     )(s)
 }
 
+fn keyword_close_paragraph(s: &str) -> ReadResult<&str> {
+    recognize(tuple((
+        tag("That's"),
+        whitespace1,
+        tag("all"),
+        whitespace1,
+        tag("about"),
+    )))(s)
+}
+
 fn paragraph_closing(s: &str) -> ReadResult<&str> {
     terminated(
-        preceded(preceded(tag("That's all about"), whitespace0), identifier),
+        preceded(preceded(keyword_close_paragraph, whitespace1), identifier),
         punctuation,
     )(s)
+}
+
+fn keyword_close_report(s: &str) -> ReadResult<&str> {
+    recognize(tuple((
+        tag("Your"),
+        whitespace1,
+        tag("faithful"),
+        whitespace1,
+        tag("student"),
+    )))(s)
 }
 
 fn report_closing(s: &str) -> ReadResult<&str> {
     terminated(
         terminated(
             preceded(
-                preceded(tag("Your faithful student"), punctuation),
+                preceded(keyword_close_report, punctuation),
                 take_till1(is_punctuation),
             ),
             punctuation,
