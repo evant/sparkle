@@ -112,6 +112,8 @@ fn send<'a, B: Backend>(
     // constant strings for printing booleans
     create_constant_string("yes", sender)?;
     create_constant_string("no", sender)?;
+    // constant string for formatting numbers
+    create_constant_string("%g", sender)?;
 
     if !report.paragraphs.is_empty() {
         send_paragraph(&report.paragraphs[0], sender, &mut function_sender)?;
@@ -180,7 +182,9 @@ fn send_print_statement<'a, B: Backend>(
                 .builder
                 .ins()
                 .stack_addr(sender.pointer_type, slot, 0);
-            float_to_string(value, buff, sender, &mut function_sender.builder)?
+            let buff_size = function_sender.builder.ins().iconst(types::I64, 24);
+            float_to_string(value, buff, buff_size, sender, &mut function_sender.builder)?;
+            buff
         }
         crate::types::Type::Boolean => {
             let else_block = function_sender.builder.create_ebb();
@@ -701,24 +705,26 @@ fn compare_strings<B: Backend>(
 fn float_to_string<B: Backend>(
     float_value: Value,
     buffer_value: Value,
+    buffer_size: Value,
     sender: &mut Sender<B>,
     builder: &mut FunctionBuilder,
 ) -> Result<Value, ReportError> {
     let mut sig = sender.module.make_signature();
-    sig.params.push(AbiParam::new(types::F64));
-    sig.params.push(AbiParam::new(types::I32));
     sig.params.push(AbiParam::new(sender.pointer_type));
-    sig.returns.push(AbiParam::new(sender.pointer_type));
+    sig.params.push(AbiParam::new(types::I64));
+    sig.params.push(AbiParam::new(sender.pointer_type));
+    sig.params.push(AbiParam::new(types::F64));
+    sig.returns.push(AbiParam::new(types::I32));
 
     let callee = sender
         .module
-        .declare_function("gcvt", Linkage::Import, &sig)?;
+        .declare_function("snprintf", Linkage::Import, &sig)?;
     let local_callee = sender.module.declare_func_in_func(callee, builder.func);
 
-    let n_digits = builder.ins().iconst(types::I32, 9);
+    let format = reference_constant_string("%g", sender, builder)?;
     let call = builder
         .ins()
-        .call(local_callee, &[float_value, n_digits, buffer_value]);
+        .call(local_callee, &[buffer_value, buffer_size, format, float_value]);
 
     Ok(builder.inst_results(call)[0])
 }
