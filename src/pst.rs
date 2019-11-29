@@ -12,6 +12,7 @@ pub enum Statement<'a> {
     Print(Expr<'a>),
     Declare(Variable<'a>, Option<Type>, Option<Expr<'a>>, bool),
     Assign(Variable<'a>, Expr<'a>),
+    Increment(Variable<'a>),
     If(Expr<'a>, Vec<Statement<'a>>, Vec<Statement<'a>>),
 }
 

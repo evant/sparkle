@@ -156,6 +156,7 @@ fn send_statement<'a, B: Backend>(
         }
         Statement::Assign(var, expr) => send_assign_statement(var, expr, sender, function_sender),
         Statement::If(cond, if_, else_) => send_if_else(cond, if_, else_, sender, function_sender),
+        Statement::Increment(var) => send_increment_statement(var, sender, function_sender),
     }
 }
 
@@ -344,6 +345,31 @@ fn send_if_else<'a, B: Backend>(
     Ok(())
 }
 
+fn send_increment_statement<'a, B: Backend>(
+    var: &pst::Variable,
+    sender: &mut Sender<B>,
+    function_sender: &mut FunctionSender<'a>,
+) -> Result<(), ReportError> {
+    let var_data = &function_sender
+        .vars
+        .get(var)
+        .unwrap_or_else(|| panic!("I didn't know '{}'", var.0));
+    Number.check(var_data.type_)?;
+    let value = function_sender
+        .builder
+        .ins()
+        .stack_load(types::F64, var_data.slot, 0);
+
+    let one = function_sender.builder.ins().f64const(1f64);
+    let new_value = function_sender.builder.ins().fadd(value, one);
+    function_sender
+        .builder
+        .ins()
+        .stack_store(new_value, var_data.slot, 0);
+
+    Ok(())
+}
+
 fn send_expression<'a, B: Backend>(
     expr: &Expr<'a>,
     sender: &mut Sender<B>,
@@ -385,27 +411,75 @@ fn send_expression<'a, B: Backend>(
                 }),
                 BinOperator::Equal => {
                     let type_ = left_type.check(right_type)?;
-                    send_comparison(type_, IntCC::Equal, FloatCC::Equal, left_value, right_value, sender, function_sender)
+                    send_comparison(
+                        type_,
+                        IntCC::Equal,
+                        FloatCC::Equal,
+                        left_value,
+                        right_value,
+                        sender,
+                        function_sender,
+                    )
                 }
                 BinOperator::NotEqual => {
                     let type_ = left_type.check(right_type)?;
-                    send_comparison(type_, IntCC::NotEqual, FloatCC::NotEqual, left_value, right_value, sender, function_sender)
+                    send_comparison(
+                        type_,
+                        IntCC::NotEqual,
+                        FloatCC::NotEqual,
+                        left_value,
+                        right_value,
+                        sender,
+                        function_sender,
+                    )
                 }
                 BinOperator::LessThan => {
                     let type_ = left_type.check(right_type)?;
-                    send_comparison(type_, IntCC::SignedLessThan, FloatCC::LessThan, left_value, right_value, sender, function_sender)
+                    send_comparison(
+                        type_,
+                        IntCC::SignedLessThan,
+                        FloatCC::LessThan,
+                        left_value,
+                        right_value,
+                        sender,
+                        function_sender,
+                    )
                 }
                 BinOperator::GreaterThan => {
                     let type_ = left_type.check(right_type)?;
-                    send_comparison(type_, IntCC::SignedGreaterThan, FloatCC::GreaterThan, left_value, right_value, sender, function_sender)
+                    send_comparison(
+                        type_,
+                        IntCC::SignedGreaterThan,
+                        FloatCC::GreaterThan,
+                        left_value,
+                        right_value,
+                        sender,
+                        function_sender,
+                    )
                 }
                 BinOperator::LessThanOrEqual => {
                     let type_ = left_type.check(right_type)?;
-                    send_comparison(type_, IntCC::SignedLessThanOrEqual, FloatCC::LessThanOrEqual, left_value, right_value, sender, function_sender)
+                    send_comparison(
+                        type_,
+                        IntCC::SignedLessThanOrEqual,
+                        FloatCC::LessThanOrEqual,
+                        left_value,
+                        right_value,
+                        sender,
+                        function_sender,
+                    )
                 }
                 BinOperator::GreaterThanOrEqual => {
                     let type_ = left_type.check(right_type)?;
-                    send_comparison(type_, IntCC::SignedGreaterThanOrEqual, FloatCC::GreaterThanOrEqual, left_value, right_value, sender, function_sender)
+                    send_comparison(
+                        type_,
+                        IntCC::SignedGreaterThanOrEqual,
+                        FloatCC::GreaterThanOrEqual,
+                        left_value,
+                        right_value,
+                        sender,
+                        function_sender,
+                    )
                 }
             }?
         }
@@ -433,7 +507,7 @@ fn send_comparison<'a, B: Backend>(
     right_value: Value,
     sender: &mut Sender<B>,
     function_sender: &mut FunctionSender<'a>,
-) -> Result<(crate::types::Type, Value), ReportError>{
+) -> Result<(crate::types::Type, Value), ReportError> {
     Ok((
         Boolean,
         match type_ {
@@ -444,10 +518,7 @@ fn send_comparison<'a, B: Backend>(
                     sender,
                     &mut function_sender.builder,
                 )?;
-                function_sender
-                    .builder
-                    .ins()
-                    .icmp_imm(icc, result, 0)
+                function_sender.builder.ins().icmp_imm(icc, result, 0)
             }
             Number => function_sender
                 .builder

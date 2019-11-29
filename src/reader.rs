@@ -3,10 +3,10 @@ use nom::bytes::complete::{is_a, is_not, tag, take_till1, take_while};
 use nom::character::complete::space1;
 use nom::combinator::{complete, map, opt, recognize};
 use nom::error::{convert_error, ErrorKind, ParseError, VerboseError};
+use nom::IResult;
 use nom::multi::{fold_many0, many0, many1, separated_list, separated_nonempty_list};
 use nom::number::complete::double;
 use nom::sequence::{delimited, pair, preceded, separated_pair, terminated, tuple};
-use nom::IResult;
 
 use crate::error::ReportError;
 use crate::pst::{BinOperator, Expr, Literal, Paragraph, Report, Statement, Value, Variable};
@@ -35,6 +35,7 @@ fn keyword(s: &str) -> ReadResult<&str> {
         keyword_infix_sub,
         keyword_infix_mul,
         keyword_infix_div,
+        keyword_increment,
     ))(s)
 }
 
@@ -61,7 +62,7 @@ fn identifier(s: &str) -> ReadResult<&str> {
 fn word(s: &str) -> ReadResult<&str> {
     let (rest, word) = recognize(many1(not_space_or_punctuation))(s)?;
     // fail on keywords
-    if keyword(word).is_ok() {
+    if keyword(s).is_ok() {
         return Err(nom::Err::Error(VerboseError::from_error_kind(
             s,
             ErrorKind::Not,
@@ -71,14 +72,18 @@ fn word(s: &str) -> ReadResult<&str> {
 }
 
 fn whitespace_delim<'a, O, P>(parser: P) -> impl Fn(&'a str) -> ReadResult<O>
-where
-    P: Fn(&'a str) -> ReadResult<O>,
+    where
+        P: Fn(&'a str) -> ReadResult<O>,
 {
     delimited(whitespace0, parser, whitespace0)
 }
 
 fn whitespace0(s: &str) -> ReadResult<&str> {
     recognize(many0(alt((whitespace, line_comment, multiline_comment))))(s)
+}
+
+fn whitespace1(s: &str) -> ReadResult<&str> {
+    recognize(many1(alt((whitespace, line_comment, multiline_comment))))(s)
 }
 
 fn whitespace(s: &str) -> ReadResult<&str> {
@@ -147,6 +152,7 @@ fn statement(s: &str) -> ReadResult<Statement> {
             declare_statement,
             assign_statement,
             if_statement,
+            increment_statement,
         )),
         tuple((whitespace0, punctuation, whitespace0)),
     )(s)
@@ -300,6 +306,23 @@ fn if_closing(s: &str) -> ReadResult<&str> {
     terminated(tag("That's what I would do"), punctuation)(s)
 }
 
+fn keyword_increment(s: &str) -> ReadResult<&str> {
+    recognize(tuple((
+        tag("got"),
+        whitespace1,
+        tag("one"),
+        whitespace1,
+        tag("more"),
+    )))(s)
+}
+
+fn increment_statement(s: &str) -> ReadResult<Statement> {
+    map(
+        terminated(var, pair(whitespace1, keyword_increment)),
+        Statement::Increment,
+    )(s)
+}
+
 fn expr(s: &str) -> ReadResult<Expr> {
     alt((prefix_term, infix_term, value_expr))(s)
 }
@@ -334,11 +357,11 @@ fn prefix<'a, O1, O2, O3, P1, P2, V1, V2>(
     first: V1,
     second: V2,
 ) -> impl Fn(&'a str) -> ReadResult<(O2, O3)>
-where
-    P1: Fn(&'a str) -> ReadResult<O1>,
-    P2: Fn(&'a str) -> ReadResult<O1>,
-    V1: Fn(&'a str) -> ReadResult<O2>,
-    V2: Fn(&'a str) -> ReadResult<O3>,
+    where
+        P1: Fn(&'a str) -> ReadResult<O1>,
+        P2: Fn(&'a str) -> ReadResult<O1>,
+        V1: Fn(&'a str) -> ReadResult<O2>,
+        V2: Fn(&'a str) -> ReadResult<O3>,
 {
     preceded(
         terminated(op1, whitespace0),
@@ -956,7 +979,7 @@ fn parses_comparison() {
             Expr::BinOp(
                 BinOperator::Equal,
                 Box::new(Expr::Val(Value::Var(Variable("Rainbow Dash")))),
-                Box::new(Expr::Val(Value::Var(Variable("cool"))))
+                Box::new(Expr::Val(Value::Var(Variable("cool")))),
             )
         ))
     );
@@ -967,7 +990,7 @@ fn parses_comparison() {
             Expr::BinOp(
                 BinOperator::NotEqual,
                 Box::new(Expr::Val(Value::Var(Variable("Fluttershy")))),
-                Box::new(Expr::Val(Value::Var(Variable("loud"))))
+                Box::new(Expr::Val(Value::Var(Variable("loud")))),
             )
         ))
     );
@@ -978,7 +1001,7 @@ fn parses_comparison() {
             Expr::BinOp(
                 BinOperator::LessThan,
                 Box::new(Expr::Val(Value::Var(Variable("the number of cupcakes")))),
-                Box::new(Expr::Val(Value::Lit(Literal::Number(10f64))))
+                Box::new(Expr::Val(Value::Lit(Literal::Number(10f64)))),
             )
         ))
     );
@@ -989,7 +1012,7 @@ fn parses_comparison() {
             Expr::BinOp(
                 BinOperator::GreaterThanOrEqual,
                 Box::new(Expr::Val(Value::Var(Variable("the number of pies")))),
-                Box::new(Expr::Val(Value::Lit(Literal::Number(10f64))))
+                Box::new(Expr::Val(Value::Lit(Literal::Number(10f64)))),
             )
         ))
     );
@@ -1000,7 +1023,7 @@ fn parses_comparison() {
             Expr::BinOp(
                 BinOperator::GreaterThan,
                 Box::new(Expr::Val(Value::Var(Variable("the number of cakes")))),
-                Box::new(Expr::Val(Value::Lit(Literal::Number(10f64))))
+                Box::new(Expr::Val(Value::Lit(Literal::Number(10f64)))),
             )
         ))
     );
@@ -1013,7 +1036,7 @@ fn parses_comparison() {
                 Box::new(Expr::Val(Value::Var(Variable(
                     "the number of cute animals"
                 )))),
-                Box::new(Expr::Val(Value::Lit(Literal::Number(100f64))))
+                Box::new(Expr::Val(Value::Lit(Literal::Number(100f64)))),
             )
         ))
     );
@@ -1024,7 +1047,7 @@ fn parses_comparison() {
             Expr::BinOp(
                 BinOperator::GreaterThan,
                 Box::new(Expr::Val(Value::Var(Variable("Applejack")))),
-                Box::new(Expr::Val(Value::Lit(Literal::Number(50f64))))
+                Box::new(Expr::Val(Value::Lit(Literal::Number(50f64)))),
             )
         ))
     )
@@ -1064,7 +1087,7 @@ fn parses_declare_statement() {
                 Variable("the elements of harmony count"),
                 Some(Number),
                 None,
-                false
+                false,
             )
         ))
     );
@@ -1076,7 +1099,7 @@ fn parses_declare_statement() {
                 Variable("Applejack's hat"),
                 Some(Chars),
                 Some(Expr::Val(Value::Lit(Literal::Chars("Talluah")))),
-                false
+                false,
             )
         ))
     );
@@ -1088,7 +1111,7 @@ fn parses_declare_statement() {
                 Variable("Pinkie Pie"),
                 None,
                 Some(Expr::Val(Value::Lit(Literal::Boolean(true)))),
-                true
+                true,
             )
         ))
     );
@@ -1102,7 +1125,7 @@ fn parses_assign_statement() {
             "",
             Statement::Assign(
                 Variable("Spike's age"),
-                Expr::Val(Value::Lit(Literal::Number(11f64)))
+                Expr::Val(Value::Lit(Literal::Number(11f64))),
             )
         ))
     );
@@ -1115,8 +1138,8 @@ fn parses_assign_statement() {
                 Expr::BinOp(
                     BinOperator::AddOrAnd,
                     Box::new(Expr::Val(Value::Lit(Literal::Number(10f64)))),
-                    Box::new(Expr::Val(Value::Lit(Literal::Number(1f64))))
-                )
+                    Box::new(Expr::Val(Value::Lit(Literal::Number(1f64)))),
+                ),
             )
         ))
     );
@@ -1151,5 +1174,13 @@ fn parses_if_else_statement() {
                 ))))],
             )
         ))
+    );
+}
+
+#[test]
+fn parses_increment_statement() {
+    assert_eq!(
+        statement("Spike got one more."),
+        Ok(("", Statement::Increment(Variable("Spike"))))
     );
 }

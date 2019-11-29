@@ -46,7 +46,8 @@ fn math() -> TestResult {
          5\n\
          6\n\
          5.5\n\
-         6\n",
+         6\n\
+         11\n",
     );
 
     Ok(())
