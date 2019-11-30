@@ -1,4 +1,4 @@
-use std::fs::{read_to_string, File};
+use std::fs::File;
 
 use std::mem;
 use std::str::FromStr;
@@ -8,9 +8,7 @@ use cranelift::prelude::settings::{self, Configurable};
 use cranelift::prelude::*;
 use cranelift::prelude::{isa, AbiParam, FunctionBuilder, FunctionBuilderContext};
 use cranelift_faerie::{FaerieBackend, FaerieBuilder, FaerieTrapCollection};
-use cranelift_module::{
-    default_libcall_names, Backend, DataContext, FuncId, Linkage, Module, ModuleError,
-};
+use cranelift_module::{default_libcall_names, Backend, DataContext, FuncId, Linkage, Module};
 use cranelift_simplejit::{SimpleJITBackend, SimpleJITBuilder};
 use target_lexicon::Triple;
 
@@ -24,7 +22,7 @@ use std::collections::{HashMap, HashSet};
 pub fn send_out<'a>(report: &'a Report, name: &str, target: &str) -> Result<(), ReportError> {
     let mut sender = faerie_sender(name, target)?;
     let mut context = sender.module.make_context();
-    send(report, &mut sender, &mut context, |_,_|{})?;
+    send(report, &mut sender, &mut context, |_, _| {})?;
     sender.finalize(&mut context);
     let product = sender.module.finish();
     let file = File::create(name.to_owned() + ".o").expect("error opening file");
@@ -36,7 +34,7 @@ pub fn send_out<'a>(report: &'a Report, name: &str, target: &str) -> Result<(), 
 pub fn gallop<'a>(report: &'a Report, _name: &str) -> Result<(), ReportError> {
     let mut sender = simple_jit_sender();
     let mut context = sender.module.make_context();
-    let id = send(report, &mut sender, &mut context, |_,_|{})?;
+    let id = send(report, &mut sender, &mut context, |_, _| {})?;
     sender.finalize(&mut context);
     let code = sender.module.get_finalized_function(id);
     let code = unsafe { mem::transmute::<_, fn() -> (isize)>(code) };
@@ -94,7 +92,6 @@ fn send<'a, B: Backend>(
     context: &mut Context,
     mut f: impl FnMut(&Sender<B>, &Context) -> (),
 ) -> Result<FuncId, ReportError> {
-
     // constant strings for printing booleans
     create_constant_string("yes", sender)?;
     create_constant_string("no", sender)?;
@@ -112,10 +109,19 @@ fn send<'a, B: Backend>(
     send_mane(mane_paragraphs, sender, context, &mut f)
 }
 
-fn send_mane<'a, B: Backend>(mane_paragraphs: Vec<FuncId>, sender: &mut Sender<B>, context: &mut Context, f: &mut impl FnMut(&Sender<B>, &Context) -> ()) -> Result<FuncId, ReportError> {
+fn send_mane<B: Backend>(
+    mane_paragraphs: Vec<FuncId>,
+    sender: &mut Sender<B>,
+    context: &mut Context,
+    f: &mut impl FnMut(&Sender<B>, &Context) -> (),
+) -> Result<FuncId, ReportError> {
     let mut builder_context = FunctionBuilderContext::new();
     let int = sender.pointer_type;
-    context.func.signature.returns.push(AbiParam::new(sender.pointer_type));
+    context
+        .func
+        .signature
+        .returns
+        .push(AbiParam::new(sender.pointer_type));
 
     let builder = FunctionBuilder::new(&mut context.func, &mut builder_context);
     let mut function_sender = FunctionSender::new(builder);
@@ -165,9 +171,9 @@ fn send_paragraph<'a, B: Backend>(
     let mut function_sender = FunctionSender::new(builder);
 
     let entry_ebb = function_sender.builder.create_ebb();
-//    function_sender
-//        .builder
-//        .append_ebb_params_for_function_params(entry_ebb);
+    //    function_sender
+    //        .builder
+    //        .append_ebb_params_for_function_params(entry_ebb);
     function_sender.builder.switch_to_block(entry_ebb);
     function_sender.builder.seal_block(entry_ebb);
 
@@ -177,7 +183,7 @@ fn send_paragraph<'a, B: Backend>(
 
     function_sender.builder.ins().return_(&[]);
 
-    let mut sig = sender.module.make_signature();
+    let sig = sender.module.make_signature();
     let id = sender
         .module
         .declare_function(paragraph.name, Linkage::Local, &sig)?;
@@ -201,8 +207,8 @@ fn send_statement<'a, B: Backend>(
             send_declare_statement(var, *type_, expr, *is_const, sender, function_sender)
         }
         Statement::Assign(var, expr) => send_assign_statement(var, expr, sender, function_sender),
-        Statement::Increment(var) => send_increment_statement(var, sender, function_sender),
-        Statement::Decrement(var) => send_decrement_statement(var, sender, function_sender),
+        Statement::Increment(var) => send_increment_statement(var, function_sender),
+        Statement::Decrement(var) => send_decrement_statement(var, function_sender),
         Statement::If(cond, if_, else_) => send_if_else(cond, if_, else_, sender, function_sender),
         Statement::While(cond, body) => send_while_statement(cond, body, sender, function_sender),
     }
@@ -230,9 +236,7 @@ fn send_print_statement<'a, B: Backend>(
             float_to_string(value, buff, buff_size, sender, &mut function_sender.builder)?;
             buff
         }
-        crate::types::Type::Boolean => {
-            bool_to_string(value, sender, &mut function_sender.builder)?
-        }
+        crate::types::Type::Boolean => bool_to_string(value, sender, &mut function_sender.builder)?,
     };
 
     let mut sig = sender.module.make_signature();
@@ -403,31 +407,28 @@ fn send_while_statement<'a, B: Backend>(
     Ok(())
 }
 
-fn send_increment_statement<'a, B: Backend>(
+fn send_increment_statement<'a>(
     var: &pst::Variable,
-    sender: &mut Sender<B>,
     function_sender: &mut FunctionSender<'a>,
 ) -> Result<(), ReportError> {
-    send_update_statement(var, sender, function_sender, |builder, value| {
+    send_update_statement(var, function_sender, |builder, value| {
         let one = builder.ins().f64const(1f64);
         builder.ins().fadd(value, one)
     })
 }
 
-fn send_decrement_statement<'a, B: Backend>(
+fn send_decrement_statement<'a>(
     var: &pst::Variable,
-    sender: &mut Sender<B>,
     function_sender: &mut FunctionSender<'a>,
 ) -> Result<(), ReportError> {
-    send_update_statement(var, sender, function_sender, |builder, value| {
+    send_update_statement(var, function_sender, |builder, value| {
         let one = builder.ins().f64const(1f64);
         builder.ins().fsub(value, one)
     })
 }
 
-fn send_update_statement<'a, B: Backend>(
+fn send_update_statement<'a>(
     var: &pst::Variable,
-    sender: &mut Sender<B>,
     function_sender: &mut FunctionSender<'a>,
     f: impl FnOnce(&mut FunctionBuilder<'a>, Value) -> Value,
 ) -> Result<(), ReportError> {
@@ -598,14 +599,21 @@ fn send_expression<'a, B: Backend>(
                         let slot = function_sender
                             .builder
                             .create_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, 24));
-                        let buff = function_sender
-                            .builder
-                            .ins()
-                            .stack_addr(sender.pointer_type, slot, 0);
+                        let buff =
+                            function_sender
+                                .builder
+                                .ins()
+                                .stack_addr(sender.pointer_type, slot, 0);
                         let buff_size = function_sender.builder.ins().iconst(types::I64, 24);
-                        float_to_string(expr_value, buff, buff_size, sender, &mut function_sender.builder)?;
+                        float_to_string(
+                            expr_value,
+                            buff,
+                            buff_size,
+                            sender,
+                            &mut function_sender.builder,
+                        )?;
                         buff
-                    },
+                    }
                     Boolean => bool_to_string(expr_value, sender, &mut function_sender.builder)?,
                 };
 

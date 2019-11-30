@@ -148,11 +148,3 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     Ok(())
 }
-
-fn report(path: &str) -> String {
-    let path = Path::new(&path);
-    if path.is_dir() {
-        panic!("expected file but got dir");
-    }
-    read_to_string(path).expect("error opening report")
-}

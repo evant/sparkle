@@ -1,8 +1,6 @@
 use std::error::Error;
 use std::fmt;
-use std::fmt::{Debug, Formatter, Result};
-
-use nom::error::{ErrorKind, VerboseError};
+use std::fmt::{Formatter, Result};
 
 use crate::error::ReportError::{ModuleError, ReadError, SendError, TypeError};
 
