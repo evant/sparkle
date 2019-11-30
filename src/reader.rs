@@ -278,8 +278,8 @@ fn keyword_declare(s: &str) -> ReadResult<&str> {
         tag("was"),
         tag("has"),
         tag("had"),
-        tag("like"),
         tag("likes"),
+        tag("like"),
         tag("liked"),
     ))(s)
 }
