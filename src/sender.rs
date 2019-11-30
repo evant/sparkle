@@ -808,11 +808,11 @@ fn concat_strings<B: Backend>(
     sig.params.push(AbiParam::new(sender.pointer_type));
     sig.params.push(AbiParam::new(sender.pointer_type));
     sig.params.push(AbiParam::new(types::I64));
-    sig.returns.push(AbiParam::new(types::I64));
+    sig.returns.push(AbiParam::new(sender.pointer_type));
 
     let callee = sender
         .module
-        .declare_function("strlcat", Linkage::Import, &sig)?;
+        .declare_function("strncat", Linkage::Import, &sig)?;
     let local_callee = sender.module.declare_func_in_func(callee, builder.func);
 
     let call = builder.ins().call(local_callee, &[dest, source, dest_size]);
