@@ -10,6 +10,7 @@ mod pst;
 mod reader;
 mod sender;
 mod types;
+mod vars;
 
 enum Command {
     Send,

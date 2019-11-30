@@ -2,13 +2,14 @@ use std::error::Error;
 use std::fmt;
 use std::fmt::{Formatter, Result};
 
-use crate::error::ReportError::{ModuleError, ReadError, SendError, TypeError};
+use crate::error::ReportError::{ModuleError, ReadError, SendError, TypeError, LookupError};
 
 pub enum ReportError {
     ReadError(String),
     SendError(String),
     ModuleError(cranelift_module::ModuleError),
     TypeError(String),
+    LookupError(String),
 }
 
 impl fmt::Display for ReportError {
@@ -18,6 +19,7 @@ impl fmt::Display for ReportError {
             SendError(e) => write!(f, "{}", e),
             ModuleError(e) => fmt::Display::fmt(e, f),
             TypeError(e) => write!(f, "{}", e),
+            LookupError(e) => write!(f, "I didn't know '{}'", e),
         }
     }
 }
@@ -29,6 +31,7 @@ impl fmt::Debug for ReportError {
             SendError(e) => write!(f, "{}", e),
             ModuleError(e) => fmt::Debug::fmt(e, f),
             TypeError(e) => write!(f, "{}", e),
+            LookupError(e) => write!(f, "I didn't know '{}'", e),
         }
     }
 }

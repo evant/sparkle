@@ -16,6 +16,7 @@ use crate::error::ReportError;
 use crate::pst;
 use crate::pst::{BinOperator, Expr, Literal, Paragraph, Report, Statement};
 use crate::types::Type::{Boolean, Chars, Number};
+use crate::vars::{Callable, Callables};
 use cranelift::codegen::ir::StackSlot;
 use std::collections::{HashMap, HashSet};
 
@@ -42,6 +43,17 @@ pub fn gallop<'a>(report: &'a Report, _name: &str) -> Result<(), ReportError> {
     code();
 
     Ok(())
+}
+
+pub fn gallop_paragraph<R>(paragraph: &Paragraph) -> Result<R, ReportError> {
+    let mut sender = simple_jit_sender();
+    let mut context = sender.module.make_context();
+    let id = send_paragraph(paragraph, &mut sender, &mut context, &mut |_, _| {})?;
+    sender.finalize(&mut context);
+    let code = sender.module.get_finalized_function(id);
+    let code = unsafe { mem::transmute::<_, fn() -> R>(code) };
+
+    Ok(code())
 }
 
 pub fn proofread<'a>(report: &'a Report<'a>) -> Result<(), ReportError> {
@@ -294,14 +306,9 @@ fn send_declare_statement<'a, B: Backend>(
 
     function_sender.builder.ins().stack_store(value, slot, 0);
 
-    function_sender.vars.insert(
-        var,
-        VarData {
-            type_,
-            is_const,
-            slot,
-        },
-    );
+    function_sender
+        .vars
+        .insert(var.0, Callable::Var(type_, slot, is_const));
 
     Ok(())
 }
@@ -313,13 +320,17 @@ fn send_assign_statement<'a, B: Backend>(
     function_sender: &mut FunctionSender<'a>,
 ) -> Result<(), ReportError> {
     let (expr_type, expr_value) = send_expression(expr, sender, function_sender)?;
-    let VarData {
-        type_,
-        is_const,
-        slot,
-    } = function_sender.vars[var];
+    let (type_, slot, is_const) = match function_sender.vars.get(var.0)? {
+        Callable::Var(type_, slot, is_const) => (type_, slot, is_const),
+        Callable::Func(_, _) => {
+            return Err(ReportError::TypeError(format!(
+                "Sorry, you can't assign to a paragraph '{}'",
+                var.0
+            )))
+        }
+    };
 
-    if is_const {
+    if *is_const {
         return Err(ReportError::TypeError(format!(
             "Nopony can change what is always true: {}",
             var.0
@@ -330,7 +341,7 @@ fn send_assign_statement<'a, B: Backend>(
     function_sender
         .builder
         .ins()
-        .stack_store(expr_value, slot, 0);
+        .stack_store(expr_value, *slot, 0);
 
     Ok(())
 }
@@ -432,21 +443,32 @@ fn send_update_statement<'a>(
     function_sender: &mut FunctionSender<'a>,
     f: impl FnOnce(&mut FunctionBuilder<'a>, Value) -> Value,
 ) -> Result<(), ReportError> {
-    let var_data = &function_sender
-        .vars
-        .get(var)
-        .unwrap_or_else(|| panic!("I didn't know '{}'", var.0));
-    Number.check(var_data.type_)?;
+    let (type_, slot, is_const) = match function_sender.vars.get(var.0)? {
+        Callable::Var(type_, slot, is_const) => (type_, slot, is_const),
+        Callable::Func(_, _) => return Err(ReportError::TypeError(format!(
+            "Sorry, you can't assign to a paragraph '{}'",
+            var.0
+        )))
+    };
+    Number.check(*type_)?;
+
+    if *is_const {
+        return Err(ReportError::TypeError(format!(
+            "Nopony can change what is always true: {}",
+            var.0
+        )));
+    }
+
     let value = function_sender
         .builder
         .ins()
-        .stack_load(types::F64, var_data.slot, 0);
+        .stack_load(types::F64, *slot, 0);
 
     let new_value = f(&mut function_sender.builder, value);
     function_sender
         .builder
         .ins()
-        .stack_store(new_value, var_data.slot, 0);
+        .stack_store(new_value, *slot, 0);
 
     Ok(())
 }
@@ -675,16 +697,24 @@ fn send_value<'a, B: Backend>(
     let result = match value {
         pst::Value::Lit(lit) => send_literal(lit, sender, function_sender)?,
         pst::Value::Var(var) => {
-            let var_data = &function_sender
-                .vars
-                .get(var)
-                .unwrap_or_else(|| panic!("I didn't know '{}'", var.0));
-            let v = function_sender.builder.ins().stack_load(
-                ir_type(sender, var_data.type_),
-                var_data.slot,
-                0,
-            );
-            (var_data.type_, v)
+            match function_sender.vars.get(var.0)? {
+                Callable::Var(type_, slot, _) => {
+                    let v = function_sender.builder.ins().stack_load(
+                        ir_type(sender, *type_),
+                        *slot,
+                        0,
+                    );
+                    (*type_, v)
+                },
+                Callable::Func(type_, func_id) => {
+                    let local_callee = sender
+                        .module
+                        .declare_func_in_func(*func_id, &mut function_sender.builder.func);
+                    let call = function_sender.builder.ins().call(local_callee, &[]);
+                    let result = function_sender.builder.inst_results(call)[0];
+                    (*type_, result)
+                },
+            }
         }
     };
 
@@ -898,14 +928,14 @@ impl<B: Backend> Sender<B> {
 
 struct FunctionSender<'a> {
     builder: FunctionBuilder<'a>,
-    vars: HashMap<&'a pst::Variable<'a>, VarData>,
+    vars: Callables<'a>,
 }
 
 impl<'a> FunctionSender<'a> {
     fn new(builder: FunctionBuilder<'a>) -> FunctionSender<'a> {
         FunctionSender {
             builder,
-            vars: HashMap::new(),
+            vars: Callables::new(),
         }
     }
 }
