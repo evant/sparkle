@@ -19,13 +19,12 @@ use crate::pst;
 use crate::pst::{BinOperator, Expr, Literal, Paragraph, Report, Statement};
 use crate::types::Type::{Boolean, Chars, Number};
 use cranelift::codegen::ir::StackSlot;
-use cranelift::prelude::settings::detail::Detail::Bool;
 use std::collections::{HashMap, HashSet};
 
 pub fn send_out<'a>(report: &'a Report, name: &str, target: &str) -> Result<(), ReportError> {
     let mut sender = faerie_sender(name, target)?;
     let mut context = sender.module.make_context();
-    send(report, &mut sender, &mut context)?;
+    send(report, &mut sender, &mut context, |_,_|{})?;
     sender.finalize(&mut context);
     let product = sender.module.finish();
     let file = File::create(name.to_owned() + ".o").expect("error opening file");
@@ -37,7 +36,7 @@ pub fn send_out<'a>(report: &'a Report, name: &str, target: &str) -> Result<(), 
 pub fn gallop<'a>(report: &'a Report, _name: &str) -> Result<(), ReportError> {
     let mut sender = simple_jit_sender();
     let mut context = sender.module.make_context();
-    let id = send(report, &mut sender, &mut context)?;
+    let id = send(report, &mut sender, &mut context, |_,_|{})?;
     sender.finalize(&mut context);
     let code = sender.module.get_finalized_function(id);
     let code = unsafe { mem::transmute::<_, fn() -> (isize)>(code) };
@@ -51,15 +50,14 @@ pub fn proofread<'a>(report: &'a Report<'a>) -> Result<(), ReportError> {
     let mut sender = simple_jit_sender();
     let mut context = sender.module.make_context();
 
-    let id = send(&report, &mut sender, &mut context)?;
-
     let mut buff = String::new();
-
-    cranelift::codegen::write_function(
-        &mut buff,
-        &context.func,
-        &Some(sender.module.isa()).into(),
-    )?;
+    send(&report, &mut sender, &mut context, |sender, context| {
+        cranelift::codegen::write_function(
+            &mut buff,
+            &context.func,
+            &Some(sender.module.isa()).into(),
+        );
+    })?;
 
     print!("{}", buff);
 
@@ -94,12 +92,32 @@ fn send<'a, B: Backend>(
     report: &'a Report,
     sender: &mut Sender<B>,
     context: &mut Context,
+    mut f: impl FnMut(&Sender<B>, &Context) -> (),
 ) -> Result<FuncId, ReportError> {
-    let mut builder_context = FunctionBuilderContext::new();
-    let int = sender.module.target_config().pointer_type();
-    context.func.signature.returns.push(AbiParam::new(int));
 
-    let mut builder = FunctionBuilder::new(&mut context.func, &mut builder_context);
+    // constant strings for printing booleans
+    create_constant_string("yes", sender)?;
+    create_constant_string("no", sender)?;
+    // constant string for formatting numbers
+    create_constant_string("%g", sender)?;
+
+    let mut mane_paragraphs: Vec<FuncId> = vec![];
+    for paragraph in &report.paragraphs {
+        let id = send_paragraph(&paragraph, sender, context, &mut f)?;
+        if paragraph.mane {
+            mane_paragraphs.push(id);
+        }
+    }
+
+    send_mane(mane_paragraphs, sender, context, &mut f)
+}
+
+fn send_mane<'a, B: Backend>(mane_paragraphs: Vec<FuncId>, sender: &mut Sender<B>, context: &mut Context, f: &mut impl FnMut(&Sender<B>, &Context) -> ()) -> Result<FuncId, ReportError> {
+    let mut builder_context = FunctionBuilderContext::new();
+    let int = sender.pointer_type;
+    context.func.signature.returns.push(AbiParam::new(sender.pointer_type));
+
+    let builder = FunctionBuilder::new(&mut context.func, &mut builder_context);
     let mut function_sender = FunctionSender::new(builder);
 
     let entry_ebb = function_sender.builder.create_ebb();
@@ -109,14 +127,11 @@ fn send<'a, B: Backend>(
     function_sender.builder.switch_to_block(entry_ebb);
     function_sender.builder.seal_block(entry_ebb);
 
-    // constant strings for printing booleans
-    create_constant_string("yes", sender)?;
-    create_constant_string("no", sender)?;
-    // constant string for formatting numbers
-    create_constant_string("%g", sender)?;
-
-    if !report.paragraphs.is_empty() {
-        send_paragraph(&report.paragraphs[0], sender, &mut function_sender)?;
+    for func_id in mane_paragraphs {
+        let local_callee = sender
+            .module
+            .declare_func_in_func(func_id, function_sender.builder.func);
+        function_sender.builder.ins().call(local_callee, &[]);
     }
 
     let zero = function_sender.builder.ins().iconst(int, 0);
@@ -131,19 +146,48 @@ fn send<'a, B: Backend>(
         .declare_function("main", Linkage::Export, &context.func.signature)?;
     sender.module.define_function(id, context)?;
 
+    f(sender, context);
+
+    sender.module.clear_context(context);
+
     Ok(id)
 }
 
 fn send_paragraph<'a, B: Backend>(
     paragraph: &'a Paragraph,
     sender: &mut Sender<B>,
-    function_sender: &mut FunctionSender<'a>,
-) -> Result<(), ReportError> {
+    context: &mut Context,
+    f: &mut impl FnMut(&Sender<B>, &Context) -> (),
+) -> Result<FuncId, ReportError> {
+    let mut builder_context = FunctionBuilderContext::new();
+
+    let builder = FunctionBuilder::new(&mut context.func, &mut builder_context);
+    let mut function_sender = FunctionSender::new(builder);
+
+    let entry_ebb = function_sender.builder.create_ebb();
+//    function_sender
+//        .builder
+//        .append_ebb_params_for_function_params(entry_ebb);
+    function_sender.builder.switch_to_block(entry_ebb);
+    function_sender.builder.seal_block(entry_ebb);
+
     for statement in paragraph.statements.iter() {
-        send_statement(statement, sender, function_sender)?;
+        send_statement(statement, sender, &mut function_sender)?;
     }
 
-    Ok(())
+    function_sender.builder.ins().return_(&[]);
+
+    let mut sig = sender.module.make_signature();
+    let id = sender
+        .module
+        .declare_function(paragraph.name, Linkage::Local, &sig)?;
+    sender.module.define_function(id, context)?;
+
+    f(sender, context);
+
+    sender.module.clear_context(context);
+
+    Ok(id)
 }
 
 fn send_statement<'a, B: Backend>(

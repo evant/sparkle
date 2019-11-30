@@ -102,7 +102,7 @@ fn report(s: &str) -> ReadResult<Report> {
     map(
         tuple((
             terminated(report_declaration, whitespace0),
-            terminated(many0(paragraph), whitespace0),
+            many0(terminated(paragraph, whitespace0)),
             report_closing,
         )),
         |(declaration, paragraphs, closing)| Report {
@@ -133,13 +133,15 @@ fn report_declaration(s: &str) -> ReadResult<&str> {
 fn paragraph(s: &str) -> ReadResult<Paragraph> {
     map(
         tuple((
+            opt(terminated(tag("Today"), whitespace1)),
             terminated(paragraph_declaration, whitespace0),
             many0(statement),
             paragraph_closing,
         )),
-        |(declaration, statements, closing)| Paragraph {
+        |(today, declaration, statements, closing)| Paragraph {
             name: declaration,
             closing_name: closing,
+            mane: today.is_some(),
             statements,
         },
     )(s)
@@ -147,8 +149,6 @@ fn paragraph(s: &str) -> ReadResult<Paragraph> {
 
 fn keyword_declare_paragraph(s: &str) -> ReadResult<&str> {
     recognize(tuple((
-        tag("Today"),
-        whitespace1,
         tag("I"),
         whitespace1,
         tag("learned"),
@@ -913,11 +913,11 @@ fn parses_report_closing() {
 #[test]
 fn parses_paragraph_declaration() {
     assert_eq!(
-        paragraph_declaration("Today I learned how to fly."),
+        paragraph_declaration("I learned how to fly."),
         Ok(("", "how to fly"))
     );
     assert_eq!(
-        paragraph_declaration("Today I learned to say hello world:"),
+        paragraph_declaration("I learned to say hello world:"),
         Ok(("", "to say hello world"))
     );
 }
@@ -947,6 +947,7 @@ fn parses_paragraph() {
             Paragraph {
                 name: "how to fly",
                 closing_name: "how to fly",
+                mane: true,
                 statements: vec![Statement::Print(Expr::Val(Value::Lit(Literal::Chars(
                     "Fly!"
                 ))))],
@@ -955,7 +956,7 @@ fn parses_paragraph() {
     );
     assert_eq!(
         paragraph(
-            "Today I learned how to fly.
+            "I learned how to fly.
              I said \"Fly1!\".
              I said the number 5 added to 6.
              I said yes.
@@ -966,6 +967,7 @@ fn parses_paragraph() {
             Paragraph {
                 name: "how to fly",
                 closing_name: "how to fly",
+                mane: false,
                 statements: vec![
                     Statement::Print(Expr::Val(Value::Lit(Literal::Chars("Fly1!")))),
                     Statement::Print(Expr::BinOp(
@@ -1000,6 +1002,7 @@ fn parses_report() {
                 paragraphs: vec![Paragraph {
                     name: "how to fly",
                     closing_name: "how to fly",
+                    mane: true,
                     statements: vec![Statement::Print(Expr::Val(Value::Lit(Literal::Chars(
                         "Fly!"
                     ))))],

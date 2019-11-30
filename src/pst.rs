@@ -4,6 +4,7 @@ use crate::types::Type;
 pub struct Paragraph<'a> {
     pub name: &'a str,
     pub closing_name: &'a str,
+    pub mane: bool,
     pub statements: Vec<Statement<'a>>,
 }
 
