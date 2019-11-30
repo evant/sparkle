@@ -39,6 +39,7 @@ pub struct Variable<'a>(pub &'a str);
 pub enum Expr<'a> {
     BinOp(BinOperator, Box<Expr<'a>>, Box<Expr<'a>>),
     Not(Value<'a>),
+    Concat(Vec<Expr<'a>>),
     Val(Value<'a>),
 }
 

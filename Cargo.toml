@@ -9,7 +9,7 @@ name = "sparkle"
 path = "src/mane.rs"
 
 [dependencies]
-nom = "5.0.1"
+nom = { version = "5.0.1", default-features = false, features = ["std"] }
 cranelift = "0.51.0"
 cranelift-module = "0.51.0"
 cranelift-faerie = "0.51.0"

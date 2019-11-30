@@ -3,7 +3,7 @@ use nom::bytes::complete::{is_a, is_not, tag, take_till1, take_while};
 use nom::character::complete::space1;
 use nom::combinator::{complete, map, opt, recognize};
 use nom::error::{convert_error, ErrorKind, ParseError, VerboseError};
-use nom::multi::{fold_many0, many0, many1, separated_list, separated_nonempty_list};
+use nom::multi::{fold_many0, many0, many1, separated_nonempty_list};
 use nom::number::complete::double;
 use nom::sequence::{delimited, pair, preceded, separated_pair, terminated, tuple};
 use nom::IResult;
@@ -91,7 +91,7 @@ fn whitespace(s: &str) -> ReadResult<&str> {
 }
 
 fn not_space_or_punctuation(s: &str) -> ReadResult<&str> {
-    is_not(" \t\r\n!,.:?…‽")(s)
+    is_not(" \t\r\n!,.:?…‽\"")(s)
 }
 
 fn punctuation(s: &str) -> ReadResult<&str> {
@@ -451,8 +451,51 @@ fn decrement_statement(s: &str) -> ReadResult<Statement> {
     )(s)
 }
 
-fn expr(s: &str) -> ReadResult<Expr> {
+fn expr_term(s: &str) -> ReadResult<Expr> {
     alt((prefix_term, infix_term, value_expr))(s)
+}
+
+fn expr(s: &str) -> ReadResult<Expr> {
+    let (mut rest, mut e) = expr_term(s)?;
+    let mut acc: Vec<Expr> = vec![];
+    loop {
+        rest = whitespace0(rest)?.0;
+        // Alternate between expressions and char literals
+        let next_parser = if is_chars_literal(&e) {
+            expr_term
+        } else {
+            expr_string
+        };
+        acc.push(e);
+        let (next_rest, next_e) = match next_parser(rest) {
+            Err(nom::Err::Error(_)) => {
+                // If we only have one expression return that, otherwise we need to concatenate them.
+                return Ok((
+                    rest,
+                    if acc.len() == 1 {
+                        acc.remove(0)
+                    } else {
+                        Expr::Concat(acc)
+                    },
+                ));
+            }
+            Err(e) => return Err(e),
+            Ok(v) => v,
+        };
+        rest = next_rest;
+        e = next_e;
+    }
+}
+
+fn expr_string(s: &str) -> ReadResult<Expr> {
+    map(string, |s| Expr::Val(Value::Lit(s)))(s)
+}
+
+fn is_chars_literal(expr: &Expr) -> bool {
+    match expr {
+        Expr::Val(Value::Lit(Literal::Chars(_))) => true,
+        _ => false,
+    }
 }
 
 fn value_expr(s: &str) -> ReadResult<Expr> {
@@ -1229,6 +1272,31 @@ fn parses_comparison() {
 }
 
 #[test]
+fn parses_concat() {
+    assert_eq!(
+        expr("Applejack\" jugs of cider on the wall\""),
+        Ok((
+            "",
+            Expr::Concat(vec![
+                Expr::Val(Value::Var(Variable("Applejack"))),
+                Expr::Val(Value::Lit(Literal::Chars(" jugs of cider on the wall")))
+            ])
+        ))
+    );
+    assert_eq!(
+        expr("\"It needs to be about \" 20 \"% cooler\""),
+        Ok((
+            "",
+            Expr::Concat(vec![
+                Expr::Val(Value::Lit(Literal::Chars("It needs to be about "))),
+                Expr::Val(Value::Lit(Literal::Number(20f64))),
+                Expr::Val(Value::Lit(Literal::Chars("% cooler")))
+            ])
+        ))
+    );
+}
+
+#[test]
 fn parses_print_statement() {
     assert_eq!(
         statement("I wrote 1 added to 2."),
@@ -1248,6 +1316,17 @@ fn parses_print_statement() {
             Statement::Print(Expr::Val(Value::Var(Variable(
                 "the elements of harmony count"
             ))))
+        ))
+    );
+    assert_eq!(
+        statement("I said \"It needs to be about \" 20 \"% cooler\"."),
+        Ok((
+            "",
+            Statement::Print(Expr::Concat(vec![
+                Expr::Val(Value::Lit(Literal::Chars("It needs to be about "))),
+                Expr::Val(Value::Lit(Literal::Number(20f64))),
+                Expr::Val(Value::Lit(Literal::Chars("% cooler")))
+            ]))
         ))
     );
 }

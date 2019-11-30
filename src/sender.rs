@@ -187,33 +187,7 @@ fn send_print_statement<'a, B: Backend>(
             buff
         }
         crate::types::Type::Boolean => {
-            let else_block = function_sender.builder.create_ebb();
-            let merge_block = function_sender.builder.create_ebb();
-            function_sender
-                .builder
-                .append_ebb_param(merge_block, sender.pointer_type);
-
-            function_sender.builder.ins().brz(value, else_block, &[]);
-            let then_return =
-                reference_constant_string("yes", sender, &mut function_sender.builder)?;
-            function_sender
-                .builder
-                .ins()
-                .jump(merge_block, &[then_return]);
-
-            function_sender.builder.switch_to_block(else_block);
-            function_sender.builder.seal_block(else_block);
-            let else_return =
-                reference_constant_string("no", sender, &mut function_sender.builder)?;
-            function_sender
-                .builder
-                .ins()
-                .jump(merge_block, &[else_return]);
-
-            function_sender.builder.switch_to_block(merge_block);
-            function_sender.builder.seal_block(merge_block);
-
-            function_sender.builder.ebb_params(merge_block)[0]
+            bool_to_string(value, sender, &mut function_sender.builder)?
         }
     };
 
@@ -357,7 +331,6 @@ fn send_while_statement<'a, B: Backend>(
     sender: &mut Sender<B>,
     function_sender: &mut FunctionSender<'a>,
 ) -> Result<(), ReportError> {
-
     let header_block = function_sender.builder.create_ebb();
     let exit_block = function_sender.builder.create_ebb();
     function_sender.builder.ins().jump(header_block, &[]);
@@ -366,7 +339,10 @@ fn send_while_statement<'a, B: Backend>(
     let (expr_type, expr_value) = send_expression(cond, sender, function_sender)?;
     Boolean.check(expr_type)?;
 
-    function_sender.builder.ins().brz(expr_value, exit_block, &[]);
+    function_sender
+        .builder
+        .ins()
+        .brz(expr_value, exit_block, &[]);
 
     for statement in body {
         send_statement(statement, sender, function_sender)?;
@@ -405,7 +381,12 @@ fn send_decrement_statement<'a, B: Backend>(
     })
 }
 
-fn send_update_statement<'a, B: Backend>(var: &pst::Variable, sender:&mut Sender<B>, function_sender: &mut FunctionSender<'a>, f: impl FnOnce(&mut FunctionBuilder<'a>, Value) -> Value) -> Result<(), ReportError> {
+fn send_update_statement<'a, B: Backend>(
+    var: &pst::Variable,
+    sender: &mut Sender<B>,
+    function_sender: &mut FunctionSender<'a>,
+    f: impl FnOnce(&mut FunctionBuilder<'a>, Value) -> Value,
+) -> Result<(), ReportError> {
     let var_data = &function_sender
         .vars
         .get(var)
@@ -547,6 +528,53 @@ fn send_expression<'a, B: Backend>(
                 .ins()
                 .icmp_imm(IntCC::Equal, value, 0);
             (type_, function_sender.builder.ins().bint(types::I32, b))
+        }
+        Expr::Concat(exprs) => {
+            //TODO: figure out how to allocate the buffer to the correct size.
+            let slot = function_sender
+                .builder
+                .create_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, 255));
+            let buff = function_sender
+                .builder
+                .ins()
+                .stack_addr(sender.pointer_type, slot, 0);
+
+            // Write 0 so that strcat starts at the beginning of the buffer.
+            let zero = function_sender.builder.ins().iconst(types::I32, 0);
+            function_sender.builder.ins().stack_store(zero, slot, 0);
+
+            let buff_size = function_sender.builder.ins().iconst(types::I64, 255);
+
+            for expr in exprs {
+                let (expr_type, expr_value) = send_expression(expr, sender, function_sender)?;
+                let str_value = match expr_type {
+                    Chars => expr_value,
+                    Number => {
+                        //TODO: do this without the extra allocation.
+                        let slot = function_sender
+                            .builder
+                            .create_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, 24));
+                        let buff = function_sender
+                            .builder
+                            .ins()
+                            .stack_addr(sender.pointer_type, slot, 0);
+                        let buff_size = function_sender.builder.ins().iconst(types::I64, 24);
+                        float_to_string(expr_value, buff, buff_size, sender, &mut function_sender.builder)?;
+                        buff
+                    },
+                    Boolean => bool_to_string(expr_value, sender, &mut function_sender.builder)?,
+                };
+
+                concat_strings(
+                    buff,
+                    buff_size,
+                    str_value,
+                    sender,
+                    &mut function_sender.builder,
+                )?;
+            }
+
+            (Chars, buff)
         }
         Expr::Val(val) => send_value(val, sender, function_sender)?,
     };
@@ -722,11 +750,36 @@ fn float_to_string<B: Backend>(
     let local_callee = sender.module.declare_func_in_func(callee, builder.func);
 
     let format = reference_constant_string("%g", sender, builder)?;
-    let call = builder
-        .ins()
-        .call(local_callee, &[buffer_value, buffer_size, format, float_value]);
+    let call = builder.ins().call(
+        local_callee,
+        &[buffer_value, buffer_size, format, float_value],
+    );
 
     Ok(builder.inst_results(call)[0])
+}
+
+fn bool_to_string<B: Backend>(
+    bool_value: Value,
+    sender: &mut Sender<B>,
+    builder: &mut FunctionBuilder,
+) -> Result<Value, ReportError> {
+    let else_block = builder.create_ebb();
+    let merge_block = builder.create_ebb();
+    builder.append_ebb_param(merge_block, sender.pointer_type);
+
+    builder.ins().brz(bool_value, else_block, &[]);
+    let then_return = reference_constant_string("yes", sender, builder)?;
+    builder.ins().jump(merge_block, &[then_return]);
+
+    builder.switch_to_block(else_block);
+    builder.seal_block(else_block);
+    let else_return = reference_constant_string("no", sender, builder)?;
+    builder.ins().jump(merge_block, &[else_return]);
+
+    builder.switch_to_block(merge_block);
+    builder.seal_block(merge_block);
+
+    Ok(builder.ebb_params(merge_block)[0])
 }
 
 fn reference_constant_string<B: Backend>(
@@ -742,6 +795,29 @@ fn reference_constant_string<B: Backend>(
     Ok(builder
         .ins()
         .symbol_value(sender.module.target_config().pointer_type(), local_id))
+}
+
+fn concat_strings<B: Backend>(
+    dest: Value,
+    dest_size: Value,
+    source: Value,
+    sender: &mut Sender<B>,
+    builder: &mut FunctionBuilder,
+) -> Result<Value, ReportError> {
+    let mut sig = sender.module.make_signature();
+    sig.params.push(AbiParam::new(sender.pointer_type));
+    sig.params.push(AbiParam::new(sender.pointer_type));
+    sig.params.push(AbiParam::new(types::I64));
+    sig.returns.push(AbiParam::new(types::I64));
+
+    let callee = sender
+        .module
+        .declare_function("strlcat", Linkage::Import, &sig)?;
+    let local_callee = sender.module.declare_func_in_func(callee, builder.func);
+
+    let call = builder.ins().call(local_callee, &[dest, source, dest_size]);
+
+    Ok(builder.inst_results(call)[0])
 }
 
 struct Sender<B: Backend> {
