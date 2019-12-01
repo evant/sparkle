@@ -5,6 +5,7 @@ use cranelift_module::FuncId;
 use std::collections::HashMap;
 
 pub struct Callables<'a> {
+    parent: Option<Box<&'a Callables<'a>>>,
     values: HashMap<&'a str, Callable>,
 }
 
@@ -15,10 +16,17 @@ pub enum Callable {
 }
 
 impl<'a> Callables<'a> {
-
     pub fn new() -> Callables<'a> {
         Callables {
-            values: HashMap::new()
+            parent: None,
+            values: HashMap::new(),
+        }
+    }
+
+    pub fn create_child(&self) -> Callables {
+        Callables {
+            parent: Some(Box::new(self)),
+            values: HashMap::new(),
         }
     }
 
@@ -27,8 +35,12 @@ impl<'a> Callables<'a> {
     }
 
     pub fn get(&self, name: &str) -> Result<&Callable, ReportError> {
-        self.values
-            .get(name)
-            .ok_or_else(|| ReportError::LookupError(name.to_owned()))
+        match self.values.get(name) {
+            None => match &self.parent {
+                None => Err(ReportError::LookupError(name.to_owned())),
+                Some(p) => p.get(name),
+            },
+            Some(value) => Ok(value),
+        }
     }
 }

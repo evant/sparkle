@@ -17,6 +17,7 @@ pub enum Statement<'a> {
     Decrement(Variable<'a>),
     If(Expr<'a>, Vec<Statement<'a>>, Vec<Statement<'a>>),
     While(Expr<'a>, Vec<Statement<'a>>),
+    Call(Variable<'a>),
 }
 
 #[derive(Debug, PartialEq)]

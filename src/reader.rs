@@ -47,11 +47,11 @@ fn is_punctuation(s: char) -> bool {
     }
 }
 
-fn print(s: &str) -> ReadResult<&str> {
+fn keyword_print(s: &str) -> ReadResult<&str> {
     recognize(tuple((
         tag("I"),
         whitespace1,
-        alt((tag("remembered"), tag("said"), tag("sang"), tag("wrote"))),
+        alt((tag("said"), tag("sang"), tag("wrote"))),
     )))(s)
 }
 
@@ -148,11 +148,7 @@ fn paragraph(s: &str) -> ReadResult<Paragraph> {
 }
 
 fn keyword_declare_paragraph(s: &str) -> ReadResult<&str> {
-    recognize(tuple((
-        tag("I"),
-        whitespace1,
-        tag("learned"),
-    )))(s)
+    recognize(tuple((tag("I"), whitespace1, tag("learned"))))(s)
 }
 
 fn paragraph_declaration(s: &str) -> ReadResult<&str> {
@@ -172,13 +168,14 @@ fn statement(s: &str) -> ReadResult<Statement> {
             while_statement,
             increment_statement,
             decrement_statement,
+            call_statement,
         )),
         tuple((whitespace0, punctuation, whitespace0)),
     )(s)
 }
 
 fn print_statement(s: &str) -> ReadResult<Statement> {
-    map(preceded(preceded(print, whitespace1), expr), |s| {
+    map(preceded(preceded(keyword_print, whitespace1), expr), |s| {
         Statement::Print(s)
     })(s)
 }
@@ -448,6 +445,17 @@ fn decrement_statement(s: &str) -> ReadResult<Statement> {
     map(
         terminated(var, pair(whitespace1, keyword_decrement)),
         Statement::Decrement,
+    )(s)
+}
+
+fn keyword_call(s: &str) -> ReadResult<&str> {
+    recognize(tuple((tag("I"), whitespace1, tag("remembered"))))(s)
+}
+
+fn call_statement(s: &str) -> ReadResult<Statement> {
+    map(
+        preceded(terminated(keyword_call, whitespace1), var),
+        Statement::Call,
     )(s)
 }
 
@@ -1444,7 +1452,7 @@ fn parses_while_statement() {
                 Expr::Val(Value::Lit(Literal::Boolean(true))),
                 vec![Statement::Print(Expr::Val(Value::Lit(Literal::Chars(
                     "I'm cool!"
-                ))))]
+                ))))],
             )
         ))
     );
@@ -1463,5 +1471,13 @@ fn parses_decrement_statement() {
     assert_eq!(
         statement("Spike got one less."),
         Ok(("", Statement::Decrement(Variable("Spike"))))
+    );
+}
+
+#[test]
+fn parses_call_statement() {
+    assert_eq!(
+        statement("I remembered how to fly."),
+        Ok(("", Statement::Call(Variable("how to fly"))))
     );
 }

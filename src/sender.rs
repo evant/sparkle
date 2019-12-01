@@ -22,8 +22,9 @@ use std::collections::{HashMap, HashSet};
 
 pub fn send_out<'a>(report: &'a Report, name: &str, target: &str) -> Result<(), ReportError> {
     let mut sender = faerie_sender(name, target)?;
+    let mut globals = Callables::new();
     let mut context = sender.module.make_context();
-    send(report, &mut sender, &mut context, |_, _| {})?;
+    send(report, &mut sender, &mut globals, &mut context, |_, _| {})?;
     sender.finalize(&mut context);
     let product = sender.module.finish();
     let file = File::create(name.to_owned() + ".o").expect("error opening file");
@@ -34,8 +35,9 @@ pub fn send_out<'a>(report: &'a Report, name: &str, target: &str) -> Result<(), 
 
 pub fn gallop<'a>(report: &'a Report, _name: &str) -> Result<(), ReportError> {
     let mut sender = simple_jit_sender();
+    let mut globals = Callables::new();
     let mut context = sender.module.make_context();
-    let id = send(report, &mut sender, &mut context, |_, _| {})?;
+    let id = send(report, &mut sender, &mut globals, &mut context, |_, _| {})?;
     sender.finalize(&mut context);
     let code = sender.module.get_finalized_function(id);
     let code = unsafe { mem::transmute::<_, fn() -> (isize)>(code) };
@@ -47,8 +49,17 @@ pub fn gallop<'a>(report: &'a Report, _name: &str) -> Result<(), ReportError> {
 
 pub fn gallop_paragraph<R>(paragraph: &Paragraph) -> Result<R, ReportError> {
     let mut sender = simple_jit_sender();
+    let mut globals = Callables::new();
     let mut context = sender.module.make_context();
-    let id = send_paragraph(paragraph, &mut sender, &mut context, &mut |_, _| {})?;
+    let id = declare_paragraph(paragraph, &mut sender)?;
+    send_paragraph(
+        paragraph,
+        id,
+        &mut sender,
+        &mut globals,
+        &mut context,
+        &mut |_, _| {},
+    )?;
     sender.finalize(&mut context);
     let code = sender.module.get_finalized_function(id);
     let code = unsafe { mem::transmute::<_, fn() -> R>(code) };
@@ -58,16 +69,23 @@ pub fn gallop_paragraph<R>(paragraph: &Paragraph) -> Result<R, ReportError> {
 
 pub fn proofread<'a>(report: &'a Report<'a>) -> Result<(), ReportError> {
     let mut sender = simple_jit_sender();
+    let mut globals = Callables::new();
     let mut context = sender.module.make_context();
 
     let mut buff = String::new();
-    send(&report, &mut sender, &mut context, |sender, context| {
-        cranelift::codegen::write_function(
-            &mut buff,
-            &context.func,
-            &Some(sender.module.isa()).into(),
-        );
-    })?;
+    send(
+        &report,
+        &mut sender,
+        &mut globals,
+        &mut context,
+        |sender, context| {
+            cranelift::codegen::write_function(
+                &mut buff,
+                &context.func,
+                &Some(sender.module.isa()).into(),
+            );
+        },
+    )?;
 
     print!("{}", buff);
 
@@ -100,7 +118,8 @@ fn simple_jit_sender() -> Sender<SimpleJITBackend> {
 
 fn send<'a, B: Backend>(
     report: &'a Report,
-    sender: &mut Sender<B>,
+    sender: &'a mut Sender<B>,
+    globals: &'a mut Callables<'a>,
     context: &mut Context,
     mut f: impl FnMut(&Sender<B>, &Context) -> (),
 ) -> Result<FuncId, ReportError> {
@@ -111,19 +130,30 @@ fn send<'a, B: Backend>(
     create_constant_string("%g", sender)?;
 
     let mut mane_paragraphs: Vec<FuncId> = vec![];
+    let mut paragraphs: Vec<(FuncId, &Paragraph)> = vec![];
+
     for paragraph in &report.paragraphs {
-        let id = send_paragraph(&paragraph, sender, context, &mut f)?;
+        let id = declare_paragraph(paragraph, sender)?;
+        globals.insert(paragraph.name, Callable::Func(Number, id));
+        paragraphs.push((id, paragraph));
         if paragraph.mane {
             mane_paragraphs.push(id);
         }
     }
 
-    send_mane(mane_paragraphs, sender, context, &mut f)
+    for (id, paragraph) in paragraphs {
+        send_paragraph(paragraph, id, sender, globals, context, &mut f)?;
+    }
+
+    let id = send_mane(mane_paragraphs, sender, globals, context, &mut f)?;
+
+    Ok(id)
 }
 
-fn send_mane<B: Backend>(
+fn send_mane<'a, B: Backend>(
     mane_paragraphs: Vec<FuncId>,
-    sender: &mut Sender<B>,
+    sender: &'a mut Sender<B>,
+    globals: &'a Callables<'a>,
     context: &mut Context,
     f: &mut impl FnMut(&Sender<B>, &Context) -> (),
 ) -> Result<FuncId, ReportError> {
@@ -136,7 +166,7 @@ fn send_mane<B: Backend>(
         .push(AbiParam::new(sender.pointer_type));
 
     let builder = FunctionBuilder::new(&mut context.func, &mut builder_context);
-    let mut function_sender = FunctionSender::new(builder);
+    let mut function_sender = FunctionSender::new(globals, builder);
 
     let entry_ebb = function_sender.builder.create_ebb();
     function_sender
@@ -159,9 +189,12 @@ fn send_mane<B: Backend>(
     let return_value = function_sender.builder.use_var(var);
     function_sender.builder.ins().return_(&[return_value]);
 
-    let id = sender
-        .module
-        .declare_function("main", Linkage::Export, &context.func.signature)?;
+    let id = sender.module.declare_function(
+        "main",
+        Linkage::Export,
+        &function_sender.builder.func.signature,
+    )?;
+
     sender.module.define_function(id, context)?;
 
     f(sender, context);
@@ -171,16 +204,30 @@ fn send_mane<B: Backend>(
     Ok(id)
 }
 
-fn send_paragraph<'a, B: Backend>(
+fn declare_paragraph<'a, B: Backend>(
     paragraph: &'a Paragraph,
     sender: &mut Sender<B>,
+) -> Result<FuncId, ReportError> {
+    let sig = sender.module.make_signature();
+    let id = sender
+        .module
+        .declare_function(paragraph.name, Linkage::Local, &sig)?;
+
+    Ok(id)
+}
+
+fn send_paragraph<'a, B: Backend>(
+    paragraph: &'a Paragraph,
+    func_id: FuncId,
+    sender: &mut Sender<B>,
+    globals: &'a Callables<'a>,
     context: &mut Context,
     f: &mut impl FnMut(&Sender<B>, &Context) -> (),
-) -> Result<FuncId, ReportError> {
+) -> Result<(), ReportError> {
     let mut builder_context = FunctionBuilderContext::new();
 
     let builder = FunctionBuilder::new(&mut context.func, &mut builder_context);
-    let mut function_sender = FunctionSender::new(builder);
+    let mut function_sender = FunctionSender::new(globals, builder);
 
     let entry_ebb = function_sender.builder.create_ebb();
     //    function_sender
@@ -195,23 +242,19 @@ fn send_paragraph<'a, B: Backend>(
 
     function_sender.builder.ins().return_(&[]);
 
-    let sig = sender.module.make_signature();
-    let id = sender
-        .module
-        .declare_function(paragraph.name, Linkage::Local, &sig)?;
-    sender.module.define_function(id, context)?;
+    sender.module.define_function(func_id, context)?;
 
     f(sender, context);
 
     sender.module.clear_context(context);
 
-    Ok(id)
+    Ok(())
 }
 
 fn send_statement<'a, B: Backend>(
     statement: &'a Statement<'a>,
     sender: &mut Sender<B>,
-    function_sender: &mut FunctionSender<'a>,
+    function_sender: &mut FunctionSender<'a, '_>,
 ) -> Result<(), ReportError> {
     match statement {
         Statement::Print(expr) => send_print_statement(expr, sender, function_sender),
@@ -223,13 +266,14 @@ fn send_statement<'a, B: Backend>(
         Statement::Decrement(var) => send_decrement_statement(var, function_sender),
         Statement::If(cond, if_, else_) => send_if_else(cond, if_, else_, sender, function_sender),
         Statement::While(cond, body) => send_while_statement(cond, body, sender, function_sender),
+        Statement::Call(var) => send_call(var, sender, function_sender),
     }
 }
 
 fn send_print_statement<'a, B: Backend>(
     expr: &Expr<'a>,
     sender: &mut Sender<B>,
-    function_sender: &mut FunctionSender<'a>,
+    function_sender: &mut FunctionSender,
 ) -> Result<(), ReportError> {
     let (type_, value) = send_expression(expr, sender, function_sender)?;
 
@@ -265,13 +309,13 @@ fn send_print_statement<'a, B: Backend>(
     Ok(())
 }
 
-fn send_declare_statement<'a, B: Backend>(
+fn send_declare_statement<'a, 'b, B: Backend>(
     var: &'a pst::Variable<'a>,
     type_: Option<crate::types::Type>,
     expr: &Option<Expr<'a>>,
     is_const: bool,
     sender: &mut Sender<B>,
-    function_sender: &mut FunctionSender<'a>,
+    function_sender: &mut FunctionSender<'a, 'b>,
 ) -> Result<(), ReportError> {
     let (type_, value) = match (type_, expr) {
         (Some(type_), Some(expr)) => {
@@ -295,7 +339,7 @@ fn send_declare_statement<'a, B: Backend>(
         }
     };
 
-    let slot_size = ir_type(sender, type_);
+    let slot_size = ir_type(sender.pointer_type, type_);
 
     let slot = function_sender
         .builder
@@ -317,7 +361,7 @@ fn send_assign_statement<'a, B: Backend>(
     var: &pst::Variable<'a>,
     expr: &Expr<'a>,
     sender: &mut Sender<B>,
-    function_sender: &mut FunctionSender<'a>,
+    function_sender: &mut FunctionSender,
 ) -> Result<(), ReportError> {
     let (expr_type, expr_value) = send_expression(expr, sender, function_sender)?;
     let (type_, slot, is_const) = match function_sender.vars.get(var.0)? {
@@ -351,7 +395,7 @@ fn send_if_else<'a, B: Backend>(
     if_: &'a [Statement<'a>],
     else_: &'a [Statement<'a>],
     sender: &mut Sender<B>,
-    function_sender: &mut FunctionSender<'a>,
+    function_sender: &mut FunctionSender<'a, '_>,
 ) -> Result<(), ReportError> {
     let (expr_type, expr_value) = send_expression(cond, sender, function_sender)?;
     Boolean.check(expr_type)?;
@@ -388,7 +432,7 @@ fn send_while_statement<'a, B: Backend>(
     cond: &Expr<'a>,
     body: &'a [Statement<'a>],
     sender: &mut Sender<B>,
-    function_sender: &mut FunctionSender<'a>,
+    function_sender: &mut FunctionSender<'a, '_>,
 ) -> Result<(), ReportError> {
     let header_block = function_sender.builder.create_ebb();
     let exit_block = function_sender.builder.create_ebb();
@@ -418,9 +462,32 @@ fn send_while_statement<'a, B: Backend>(
     Ok(())
 }
 
+fn send_call<'a, B: Backend>(
+    var: &pst::Variable,
+    sender: &mut Sender<B>,
+    function_sender: &mut FunctionSender,
+) -> Result<(), ReportError> {
+    let (type_, func_id) = match function_sender.vars.get(var.0)? {
+        Callable::Var(_, _, _) => {
+            return Err(ReportError::TypeError(format!(
+                "Sorry, you can't call a variable: {}",
+                var.0
+            )))
+        }
+        Callable::Func(type_, func_id) => (type_, func_id),
+    };
+
+    let local_callee = sender
+        .module
+        .declare_func_in_func(*func_id, &mut function_sender.builder.func);
+    let call = function_sender.builder.ins().call(local_callee, &[]);
+
+    Ok(())
+}
+
 fn send_increment_statement<'a>(
     var: &pst::Variable,
-    function_sender: &mut FunctionSender<'a>,
+    function_sender: &mut FunctionSender,
 ) -> Result<(), ReportError> {
     send_update_statement(var, function_sender, |builder, value| {
         let one = builder.ins().f64const(1f64);
@@ -430,7 +497,7 @@ fn send_increment_statement<'a>(
 
 fn send_decrement_statement<'a>(
     var: &pst::Variable,
-    function_sender: &mut FunctionSender<'a>,
+    function_sender: &mut FunctionSender,
 ) -> Result<(), ReportError> {
     send_update_statement(var, function_sender, |builder, value| {
         let one = builder.ins().f64const(1f64);
@@ -438,17 +505,19 @@ fn send_decrement_statement<'a>(
     })
 }
 
-fn send_update_statement<'a>(
+fn send_update_statement<'a, 'b>(
     var: &pst::Variable,
-    function_sender: &mut FunctionSender<'a>,
-    f: impl FnOnce(&mut FunctionBuilder<'a>, Value) -> Value,
+    function_sender: &mut FunctionSender<'a, 'b>,
+    f: impl FnOnce(&mut FunctionBuilder<'b>, Value) -> Value,
 ) -> Result<(), ReportError> {
     let (type_, slot, is_const) = match function_sender.vars.get(var.0)? {
         Callable::Var(type_, slot, is_const) => (type_, slot, is_const),
-        Callable::Func(_, _) => return Err(ReportError::TypeError(format!(
-            "Sorry, you can't assign to a paragraph '{}'",
-            var.0
-        )))
+        Callable::Func(_, _) => {
+            return Err(ReportError::TypeError(format!(
+                "Sorry, you can't assign to a paragraph '{}'",
+                var.0
+            )))
+        }
     };
     Number.check(*type_)?;
 
@@ -476,7 +545,7 @@ fn send_update_statement<'a>(
 fn send_expression<'a, B: Backend>(
     expr: &Expr<'a>,
     sender: &mut Sender<B>,
-    function_sender: &mut FunctionSender<'a>,
+    function_sender: &mut FunctionSender,
 ) -> Result<(crate::types::Type, Value), ReportError> {
     let result = match expr {
         Expr::BinOp(op, left, right) => {
@@ -663,7 +732,7 @@ fn send_comparison<'a, B: Backend>(
     left_value: Value,
     right_value: Value,
     sender: &mut Sender<B>,
-    function_sender: &mut FunctionSender<'a>,
+    function_sender: &mut FunctionSender,
 ) -> Result<(crate::types::Type, Value), ReportError> {
     Ok((
         Boolean,
@@ -692,30 +761,28 @@ fn send_comparison<'a, B: Backend>(
 fn send_value<'a, B: Backend>(
     value: &pst::Value<'a>,
     sender: &mut Sender<B>,
-    function_sender: &mut FunctionSender<'a>,
+    function_sender: &mut FunctionSender,
 ) -> Result<(crate::types::Type, Value), ReportError> {
     let result = match value {
         pst::Value::Lit(lit) => send_literal(lit, sender, function_sender)?,
-        pst::Value::Var(var) => {
-            match function_sender.vars.get(var.0)? {
-                Callable::Var(type_, slot, _) => {
-                    let v = function_sender.builder.ins().stack_load(
-                        ir_type(sender, *type_),
-                        *slot,
-                        0,
-                    );
-                    (*type_, v)
-                },
-                Callable::Func(type_, func_id) => {
-                    let local_callee = sender
-                        .module
-                        .declare_func_in_func(*func_id, &mut function_sender.builder.func);
-                    let call = function_sender.builder.ins().call(local_callee, &[]);
-                    let result = function_sender.builder.inst_results(call)[0];
-                    (*type_, result)
-                },
+        pst::Value::Var(var) => match function_sender.vars.get(var.0)? {
+            Callable::Var(type_, slot, _) => {
+                let v = function_sender.builder.ins().stack_load(
+                    ir_type(sender.pointer_type, *type_),
+                    *slot,
+                    0,
+                );
+                (*type_, v)
             }
-        }
+            Callable::Func(type_, func_id) => {
+                let local_callee = sender
+                    .module
+                    .declare_func_in_func(*func_id, &mut function_sender.builder.func);
+                let call = function_sender.builder.ins().call(local_callee, &[]);
+                let result = function_sender.builder.inst_results(call)[0];
+                (*type_, result)
+            }
+        },
     };
 
     Ok(result)
@@ -724,7 +791,7 @@ fn send_value<'a, B: Backend>(
 fn send_literal<'a, B: Backend>(
     lit: &Literal<'a>,
     sender: &mut Sender<B>,
-    function_sender: &mut FunctionSender<'a>,
+    function_sender: &mut FunctionSender,
 ) -> Result<(crate::types::Type, Value), ReportError> {
     let result = match lit {
         Literal::Chars(string) => {
@@ -782,7 +849,6 @@ fn create_constant_string<B: Backend>(
     sender.module.define_data(id, &sender.data_context)?;
 
     sender.data_context.clear();
-    sender.module.finalize_definitions();
 
     sender.constants.insert(string.to_owned());
 
@@ -926,16 +992,16 @@ impl<B: Backend> Sender<B> {
     }
 }
 
-struct FunctionSender<'a> {
-    builder: FunctionBuilder<'a>,
+struct FunctionSender<'a, 'b> {
     vars: Callables<'a>,
+    builder: FunctionBuilder<'b>,
 }
 
-impl<'a> FunctionSender<'a> {
-    fn new(builder: FunctionBuilder<'a>) -> FunctionSender<'a> {
+impl<'a, 'b> FunctionSender<'a, 'b> {
+    fn new(globals: &'a Callables<'a>, builder: FunctionBuilder<'b>) -> FunctionSender<'a, 'b> {
         FunctionSender {
             builder,
-            vars: Callables::new(),
+            vars: globals.create_child(),
         }
     }
 }
@@ -946,9 +1012,9 @@ struct VarData {
     slot: StackSlot,
 }
 
-fn ir_type<B: Backend>(sender: &Sender<B>, type_: crate::types::Type) -> Type {
+fn ir_type(pointer_type: Type, type_: crate::types::Type) -> Type {
     match type_ {
-        Chars => sender.pointer_type,
+        Chars => pointer_type,
         Number => types::F64,
         // There are numerous bugs with b1, use i32 instead.
         // https://github.com/bytecodealliance/cranelift/issues/1117
