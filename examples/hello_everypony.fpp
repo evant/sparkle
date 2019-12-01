@@ -1,14 +1,10 @@
 Dear Princess Celestia: I went to Canterlot Again.
 
 Today I learned how to say hello to multiple ponies:
-Did you know that pony is "Rainbow Dash"?
-I said "Hello, " pony.
-Did you know that pony is "Pinkie Pie"?
-I sang "Hello, "pony.
-Did you know that pony is "Fluttershy"?
-I sang "Hello, " pony.
-Did you know that pony is "Rarity"?
-I wrote "Hello, " pony.
+I said hello using "Rainbow Dash".
+I sang hello using "Pinkie Pie".
+I sang hello using "Fluttershy".
+I wrote hello using "Rarity".
 I said hello using "Applejack".
 That's all about how to say hello to multiple ponies.
 
