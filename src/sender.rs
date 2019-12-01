@@ -14,7 +14,7 @@ use target_lexicon::Triple;
 
 use crate::error::ReportError;
 use crate::pst;
-use crate::pst::{BinOperator, Call, Expr, Literal, Paragraph, Report, Statement};
+use crate::pst::{BinOperator, Call, Expr, Literal, Paragraph, Report, Statement, Arg};
 use crate::types::Type::{Boolean, Chars, Number};
 use crate::vars::{Callable, Callables};
 use cranelift::codegen::ir::StackSlot;
@@ -209,6 +209,9 @@ fn declare_paragraph<'a, B: Backend>(
     sender: &mut Sender<B>,
 ) -> Result<FuncId, ReportError> {
     let mut sig = sender.module.make_signature();
+    for Arg(type_, _) in &paragraph.args {
+        sig.params.push(AbiParam::new(ir_type(sender.pointer_type, *type_)));
+    }
     if let Some(type_) = paragraph.return_type {
         sig.returns
             .push(AbiParam::new(ir_type(sender.pointer_type, type_)));
@@ -233,6 +236,14 @@ fn send_paragraph<'a, B: Backend>(
     let builder = FunctionBuilder::new(&mut context.func, &mut builder_context);
     let mut function_sender = FunctionSender::new(globals, builder);
 
+    let entry_ebb = function_sender.builder.create_ebb();
+
+    for Arg(arg_type, name) in &paragraph.args {
+        let value_type = ir_type(sender.pointer_type, *arg_type);
+        function_sender.builder.func.signature.params.push(AbiParam::new(value_type));
+        let arg_value = function_sender.builder.append_ebb_param(entry_ebb, value_type);
+        function_sender.vars.insert(*name, Callable::Arg(*arg_type, arg_value));
+    }
     if let Some(return_type) = paragraph.return_type {
         function_sender
             .builder
@@ -242,7 +253,6 @@ fn send_paragraph<'a, B: Backend>(
             .push(AbiParam::new(ir_type(sender.pointer_type, return_type)));
     }
 
-    let entry_ebb = function_sender.builder.create_ebb();
     function_sender.builder.switch_to_block(entry_ebb);
     function_sender.builder.seal_block(entry_ebb);
 
@@ -391,16 +401,19 @@ fn send_assign_statement<'a, B: Backend>(
 ) -> Result<(), ReportError> {
     let (expr_type, expr_value) = send_expression(expr, sender, function_sender)?;
     let (type_, slot, is_const) = match function_sender.vars.get(var.0)? {
+        Callable::Arg(_, _) => {
+            return Err(ReportError::TypeError(format!("Sorry, you can't assign to an argument '{}", var.0)));
+        }
         Callable::Var(type_, slot, is_const) => (type_, slot, is_const),
         Callable::Func(_, _) => {
             return Err(ReportError::TypeError(format!(
                 "Sorry, you can't assign to a paragraph '{}'",
                 var.0
-            )))
+            )));
         }
     };
 
-    if *is_const {
+    if is_const {
         return Err(ReportError::TypeError(format!(
             "Nopony can change what is always true: '{}'",
             var.0
@@ -411,7 +424,7 @@ fn send_assign_statement<'a, B: Backend>(
     function_sender
         .builder
         .ins()
-        .stack_store(expr_value, *slot, 0);
+        .stack_store(expr_value, slot, 0);
 
     Ok(())
 }
@@ -496,31 +509,47 @@ fn send_call<B: Backend>(
     function_sender: &mut FunctionSender,
 ) -> Result<Option<(crate::types::Type, Value)>, ReportError> {
     let Call(name, args) = call;
-    let (type_, func_id) = match function_sender.vars.get(name)? {
-        Callable::Var(type_, slot, _) => {
+    match function_sender.vars.get(name)? {
+        Callable::Arg(type_, value) => {
             if args.is_empty() {
-                return Ok(Some(send_var(*type_, *slot, sender, function_sender)));
+                Ok(Some((type_, value)))
             } else {
-                return Err(ReportError::TypeError(format!(
-                    "Sorry, you can't call a variable: '{}'",
+                Err(ReportError::TypeError(format!(
+                    "Sorry, you can't call an argument: '{}'",
                     name
-                )));
+                )))
             }
         }
-        Callable::Func(type_, func_id) => (type_, func_id),
-    };
+        Callable::Var(type_, slot, _) => {
+            if args.is_empty() {
+                Ok(Some(send_var(type_, slot, sender, function_sender)))
+            } else {
+                Err(ReportError::TypeError(format!(
+                    "Sorry, you can't call a variable: '{}'",
+                    name
+                )))
+            }
+        },
+        Callable::Func(type_, func_id) => {
+            let mut arg_values = vec![];
+            for arg in args {
+                let (expr_type, expr_value) = send_expression(arg, sender, function_sender)?;
+                arg_values.push(expr_value);
+            }
 
-    let local_callee = sender
-        .module
-        .declare_func_in_func(*func_id, &mut function_sender.builder.func);
-    let result = function_sender.builder.ins().call(local_callee, &[]);
+            let local_callee = sender
+                .module
+                .declare_func_in_func(func_id, &mut function_sender.builder.func);
+            let result = function_sender.builder.ins().call(local_callee, &arg_values);
 
-    match type_ {
-        None => Ok(None),
-        Some(t) => {
-            let v = function_sender.builder.inst_results(result)[0];
-            Ok(Some((*t, v)))
-        }
+            match type_ {
+                None => Ok(None),
+                Some(t) => {
+                    let v = function_sender.builder.inst_results(result)[0];
+                    Ok(Some((t, v)))
+                }
+            }
+        },
     }
 }
 
@@ -568,6 +597,12 @@ fn send_update_statement<'a, 'b>(
     f: impl FnOnce(&mut FunctionBuilder<'b>, Value) -> Value,
 ) -> Result<(), ReportError> {
     let (type_, slot, is_const) = match function_sender.vars.get(var.0)? {
+        Callable::Arg(_, _) => {
+            return Err(ReportError::TypeError(format!(
+                "Sorry, you can't assign to an argument '{}'",
+                var.0
+            )))
+        }
         Callable::Var(type_, slot, is_const) => (type_, slot, is_const),
         Callable::Func(_, _) => {
             return Err(ReportError::TypeError(format!(
@@ -576,9 +611,9 @@ fn send_update_statement<'a, 'b>(
             )))
         }
     };
-    Number.check(*type_)?;
+    Number.check(type_)?;
 
-    if *is_const {
+    if is_const {
         return Err(ReportError::TypeError(format!(
             "Nopony can change what is always true: '{}'",
             var.0
@@ -588,13 +623,13 @@ fn send_update_statement<'a, 'b>(
     let value = function_sender
         .builder
         .ins()
-        .stack_load(types::F64, *slot, 0);
+        .stack_load(types::F64, slot, 0);
 
     let new_value = f(&mut function_sender.builder, value);
     function_sender
         .builder
         .ins()
-        .stack_store(new_value, *slot, 0);
+        .stack_store(new_value, slot, 0);
 
     Ok(())
 }
@@ -788,7 +823,7 @@ fn send_expression<'a, B: Backend>(
     Ok(result)
 }
 
-fn send_comparison<'a, B: Backend>(
+fn send_comparison<B: Backend>(
     type_: crate::types::Type,
     icc: IntCC,
     fcc: FloatCC,

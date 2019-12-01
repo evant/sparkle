@@ -3,6 +3,7 @@ use crate::types::Type;
 use cranelift::codegen::ir::StackSlot;
 use cranelift_module::FuncId;
 use std::collections::HashMap;
+use cranelift::prelude::Value;
 
 pub struct Callables<'a> {
     parent: Option<Box<&'a Callables<'a>>>,
@@ -11,6 +12,7 @@ pub struct Callables<'a> {
 
 #[derive(Copy, Clone)]
 pub enum Callable {
+    Arg(Type, Value),
     Var(Type, StackSlot, bool),
     Func(Option<Type>, FuncId),
 }
@@ -34,13 +36,13 @@ impl<'a> Callables<'a> {
         self.values.insert(name, value);
     }
 
-    pub fn get(&self, name: &str) -> Result<&Callable, ReportError> {
+    pub fn get(&self, name: &str) -> Result<Callable, ReportError> {
         match self.values.get(name) {
             None => match &self.parent {
                 None => Err(ReportError::LookupError(name.to_owned())),
                 Some(p) => p.get(name),
             },
-            Some(value) => Ok(value),
+            Some(value) => Ok(*value),
         }
     }
 }

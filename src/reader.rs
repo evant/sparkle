@@ -887,9 +887,13 @@ fn prefix_xor<'a>(allow_infix_and: bool) -> impl Fn(&'a str) -> ReadResult<Expr>
     )
 }
 
-fn prefix_not<'a>(allow_infix_and: bool) -> impl Fn(&'a str) -> ReadResult<Expr> {
+fn prefix_not<'a>(_allow_infix_and: bool) -> impl Fn(&'a str) -> ReadResult<Expr> {
     map(
-        preceded(terminated(tag("not"), whitespace1), alt((lit_expr, call_expr))),
+        preceded(
+            terminated(tag("not"), whitespace1),
+            /*TODO: figure out how to allow not not ..., right now it creates an recursive type.*/
+            alt((lit_expr, call_expr)),
+        ),
         |e| Expr::Not(Box::new(e)),
     )
 }
