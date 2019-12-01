@@ -19,7 +19,7 @@ pub enum Statement<'a> {
     Decrement(Variable<'a>),
     If(Expr<'a>, Vec<Statement<'a>>, Vec<Statement<'a>>),
     While(Expr<'a>, Vec<Statement<'a>>),
-    Call(Variable<'a>),
+    Call(Call<'a>),
     Return(Expr<'a>),
 }
 
@@ -37,6 +37,9 @@ pub enum Literal<'a> {
     Boolean(bool),
 }
 
+#[derive(Debug, PartialEq, Clone)]
+pub struct Call<'a>(pub &'a str, pub Vec<Expr<'a>>);
+
 #[derive(Debug, PartialEq, Eq, Hash, Clone)]
 pub struct Variable<'a>(pub &'a str);
 
@@ -46,6 +49,7 @@ pub enum Expr<'a> {
     Not(Value<'a>),
     Concat(Vec<Expr<'a>>),
     Val(Value<'a>),
+    Call(Call<'a>),
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -71,4 +75,4 @@ pub enum Value<'a> {
 }
 
 #[derive(Debug, PartialEq, Clone)]
-pub struct Arg<'a>(&'a str, Type);
+pub struct Arg<'a>(pub Type, pub &'a str);

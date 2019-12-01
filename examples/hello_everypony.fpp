@@ -9,12 +9,11 @@ Did you know that pony is "Fluttershy"?
 I sang "Hello, " pony.
 Did you know that pony is "Rarity"?
 I wrote "Hello, " pony.
-I said hello to Applejack.
+I said hello using "Applejack".
 That's all about how to say hello to multiple ponies.
 
-I learned hello to Applejack to get a phrase:
-Did you know that pony is "Applejack"?
+I learned hello to get a phrase using the name pony:
 Then you get "Hello, "pony.
-That's all about hello to Applejack.
+That's all about hello.
 
 Your faithful student: Twilight Sparkle.

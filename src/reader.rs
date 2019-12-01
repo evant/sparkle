@@ -1,7 +1,7 @@
 use nom::branch::alt;
 use nom::bytes::complete::{is_a, is_not, tag, take_till1, take_while};
 use nom::character::complete::space1;
-use nom::combinator::{complete, map, opt, recognize};
+use nom::combinator::{complete, cond, map, opt, recognize};
 use nom::error::{convert_error, ErrorKind, ParseError, VerboseError};
 use nom::multi::{fold_many0, many0, many1, separated_nonempty_list};
 use nom::number::complete::double;
@@ -9,7 +9,9 @@ use nom::sequence::{delimited, pair, preceded, separated_pair, terminated, tuple
 use nom::IResult;
 
 use crate::error::ReportError;
-use crate::pst::{BinOperator, Expr, Literal, Paragraph, Report, Statement, Value, Variable};
+use crate::pst::{
+    Arg, BinOperator, Call, Expr, Literal, Paragraph, Report, Statement, Value, Variable,
+};
 use crate::types::Type;
 use crate::types::Type::{Boolean, Chars, Number};
 
@@ -31,13 +33,14 @@ fn keyword(s: &str) -> ReadResult<&str> {
         keyword_declare,
         keyword_always,
         keyword_assign,
-        keyword_infix_add,
+        keyword_infix_add(true),
         keyword_infix_sub,
         keyword_infix_mul,
         keyword_infix_div,
         keyword_increment,
         keyword_decrement,
         keyword_declare_paragraph_type,
+        keyword_using,
     ))(s)
 }
 
@@ -146,12 +149,12 @@ fn paragraph(s: &str) -> ReadResult<Paragraph> {
             many0(statement),
             paragraph_closing,
         )),
-        |(today, (declaration, type_), statements, closing)| Paragraph {
+        |(today, (declaration, return_type, args), statements, closing)| Paragraph {
             name: declaration,
             closing_name: closing,
             mane: today.is_some(),
-            args: vec![],
-            return_type: type_,
+            args,
+            return_type,
             statements,
         },
     )(s)
@@ -168,16 +171,34 @@ fn keyword_declare_paragraph_type(s: &str) -> ReadResult<&str> {
     ))(s)
 }
 
-fn paragraph_declaration(s: &str) -> ReadResult<(&str, Option<Type>)> {
+fn keyword_using(s: &str) -> ReadResult<&str> {
+    tag("using")(s)
+}
+
+fn paragraph_declaration(s: &str) -> ReadResult<(&str, Option<Type>, Vec<Arg>)> {
     terminated(
-        pair(
+        tuple((
             preceded(preceded(keyword_declare_paragraph, whitespace0), identifier),
             opt(preceded(
                 whitespace_delim1(keyword_declare_paragraph_type),
                 declare_type,
             )),
-        ),
+            map(
+                opt(preceded(
+                    whitespace_delim1(keyword_using),
+                    separated_nonempty_list(whitespace_delim1(tag("and")), paragraph_arg),
+                )),
+                |args| args.unwrap_or_else(|| vec![]),
+            ),
+        )),
         punctuation,
+    )(s)
+}
+
+fn paragraph_arg(s: &str) -> ReadResult<Arg> {
+    map(
+        separated_pair(declare_type, whitespace1, identifier),
+        |(type_, name)| Arg(type_, name),
     )(s)
 }
 
@@ -199,9 +220,10 @@ fn statement(s: &str) -> ReadResult<Statement> {
 }
 
 fn print_statement(s: &str) -> ReadResult<Statement> {
-    map(preceded(preceded(keyword_print, whitespace1), expr), |s| {
-        Statement::Print(s)
-    })(s)
+    map(
+        preceded(preceded(keyword_print, whitespace1), expr(true)),
+        |s| Statement::Print(s),
+    )(s)
 }
 
 fn keyword_always(s: &str) -> ReadResult<&str> {
@@ -233,7 +255,7 @@ fn declare_statement(s: &str) -> ReadResult<Statement> {
                     keyword_declare,
                 )),
                 opt(declare_type),
-                opt(whitespace_delim(expr)),
+                opt(whitespace_delim(expr(true))),
             )),
         ),
         |(name, is_const, type_, expr)| Statement::Declare(Variable(name), type_, expr, is_const),
@@ -242,7 +264,7 @@ fn declare_statement(s: &str) -> ReadResult<Statement> {
 
 fn assign_statement(s: &str) -> ReadResult<Statement> {
     map(
-        separated_pair(var, whitespace_delim(keyword_assign), expr),
+        separated_pair(var, whitespace_delim(keyword_assign), expr(true)),
         |(var, expr)| Statement::Assign(var, expr),
     )(s)
 }
@@ -339,7 +361,7 @@ fn if_declaration(s: &str) -> ReadResult<Expr> {
         preceded(
             terminated(alt((tag("If"), tag("When"))), whitespace1),
             terminated(
-                terminated(expr, opt(preceded(whitespace1, tag("then")))),
+                terminated(expr(true), opt(preceded(whitespace1, tag("then")))),
                 punctuation,
             ),
         ),
@@ -416,7 +438,7 @@ fn while_declaration(s: &str) -> ReadResult<Expr> {
     map(
         preceded(
             terminated(keyword_declare_while, whitespace1),
-            terminated(expr, punctuation),
+            terminated(expr(true), punctuation),
         ),
         |cond| cond,
     )(s)
@@ -478,7 +500,7 @@ fn keyword_call(s: &str) -> ReadResult<&str> {
 
 fn call_statement(s: &str) -> ReadResult<Statement> {
     map(
-        preceded(terminated(keyword_call, whitespace1), var),
+        preceded(terminated(keyword_call, whitespace1), call),
         Statement::Call,
     )(s)
 }
@@ -495,44 +517,47 @@ fn keyword_return(s: &str) -> ReadResult<&str> {
 
 fn return_statement(s: &str) -> ReadResult<Statement> {
     map(
-        preceded(terminated(keyword_return, whitespace1), expr),
+        preceded(terminated(keyword_return, whitespace1), expr(true)),
         Statement::Return,
     )(s)
 }
 
-fn expr_term(s: &str) -> ReadResult<Expr> {
-    alt((prefix_term, infix_term, value_expr))(s)
+fn expr_term<'a>(allow_infix_and: bool) -> impl Fn(&'a str) -> ReadResult<Expr> {
+    alt((prefix_term, infix_term(allow_infix_and), value_expr))
 }
 
-fn expr(s: &str) -> ReadResult<Expr> {
-    let (mut rest, mut e) = expr_term(s)?;
-    let mut acc: Vec<Expr> = vec![];
-    loop {
-        rest = whitespace0(rest)?.0;
-        // Alternate between expressions and char literals
-        let next_parser = if is_chars_literal(&e) {
-            expr_term
-        } else {
-            expr_string
-        };
-        acc.push(e);
-        let (next_rest, next_e) = match next_parser(rest) {
-            Err(nom::Err::Error(_)) => {
-                // If we only have one expression return that, otherwise we need to concatenate them.
-                return Ok((
-                    rest,
-                    if acc.len() == 1 {
-                        acc.remove(0)
-                    } else {
-                        Expr::Concat(acc)
-                    },
-                ));
-            }
-            Err(e) => return Err(e),
-            Ok(v) => v,
-        };
-        rest = next_rest;
-        e = next_e;
+fn expr<'a>(allow_infix_and: bool) -> impl Fn(&'a str) -> ReadResult<Expr> {
+    move |s| {
+        let expr_term = expr_term(allow_infix_and);
+        let (mut rest, mut e) = expr_term(s)?;
+        let mut acc: Vec<Expr> = vec![];
+        loop {
+            let maybe_rest = whitespace0(rest)?.0;
+            // Alternate between expressions and char literals
+            let next_parser: Box<dyn Fn(&'a str) -> ReadResult<Expr>> = if is_chars_literal(&e) {
+                Box::new(|s| expr_term(s))
+            } else {
+                Box::new(expr_string)
+            };
+            acc.push(e);
+            let (next_rest, next_e) = match next_parser(maybe_rest) {
+                Err(nom::Err::Error(_)) => {
+                    // If we only have one expression return that, otherwise we need to concatenate them.
+                    return Ok((
+                        rest,
+                        if acc.len() == 1 {
+                            acc.remove(0)
+                        } else {
+                            Expr::Concat(acc)
+                        },
+                    ));
+                }
+                Err(e) => return Err(e),
+                Ok(v) => v,
+            };
+            rest = next_rest;
+            e = next_e;
+        }
     }
 }
 
@@ -547,8 +572,12 @@ fn is_chars_literal(expr: &Expr) -> bool {
     }
 }
 
+fn call_expr(s: &str) -> ReadResult<Expr> {
+    map(call, Expr::Call)(s)
+}
+
 fn value_expr(s: &str) -> ReadResult<Expr> {
-    alt((prefix_not, map(value, Expr::Val)))(s)
+    alt((prefix_not, map(value, Expr::Val), call_expr))(s)
 }
 
 fn literal(s: &str) -> ReadResult<Literal> {
@@ -559,8 +588,21 @@ fn var(s: &str) -> ReadResult<Variable> {
     map(identifier, Variable)(s)
 }
 
+fn call(s: &str) -> ReadResult<Call> {
+    map(
+        pair(
+            identifier,
+            opt(preceded(
+                whitespace_delim1(tag("using")),
+                separated_nonempty_list(whitespace_delim1(tag("and")), expr(false)),
+            )),
+        ),
+        |(name, args)| Call(name, args.unwrap_or_else(|| vec![])),
+    )(s)
+}
+
 fn value(s: &str) -> ReadResult<Value> {
-    alt((value_lit, value_var))(s)
+    value_lit(s)
 }
 
 fn value_lit(s: &str) -> ReadResult<Value> {
@@ -589,24 +631,28 @@ where
     )
 }
 
-fn infix_term(s: &str) -> ReadResult<Expr> {
-    let (s, init) = value_expr(s)?;
-    fold_many0(pair(infix_op, value_expr), init, |acc, (op, val)| {
-        Expr::BinOp(op, Box::new(acc), Box::new(val))
-    })(s)
+fn infix_term<'a>(allow_and: bool) -> impl Fn(&'a str) -> ReadResult<Expr> {
+    move |s| {
+        let (s, init) = value_expr(s)?;
+        fold_many0(
+            pair(infix_op(allow_and), value_expr),
+            init,
+            |acc, (op, val)| Expr::BinOp(op, Box::new(acc), Box::new(val)),
+        )(s)
+    }
 }
 
 fn prefix_term(s: &str) -> ReadResult<Expr> {
     alt((prefix_add, prefix_sub, prefix_mul, prefix_div, prefix_xor))(s)
 }
 
-fn infix_op(s: &str) -> ReadResult<BinOperator> {
+fn infix_op<'a>(allow_and: bool) -> impl Fn(&'a str) -> ReadResult<BinOperator> {
     alt((
-        infix_add_op,
+        infix_add_op(allow_and),
         infix_sub_op,
         infix_mul_op,
         infix_div_op,
-        infix_and_op,
+        map(cond(allow_and, infix_and_op), |op| op.unwrap()),
         infix_or_op,
         infix_lt_op,
         infix_gt_op,
@@ -614,21 +660,21 @@ fn infix_op(s: &str) -> ReadResult<BinOperator> {
         infix_gte_op,
         infix_neq_op,
         infix_eq_op,
-    ))(s)
+    ))
 }
 
-fn keyword_infix_add(s: &str) -> ReadResult<&str> {
+fn keyword_infix_add<'a>(allow_and: bool) -> impl Fn(&'a str) -> ReadResult<&'a str> {
     alt((
         recognize(tuple((tag("added"), whitespace1, tag("to")))),
         tag("plus"),
-        tag("and"),
-    ))(s)
+        recognize(cond(allow_and, tag("and"))),
+    ))
 }
 
-fn infix_add_op(s: &str) -> ReadResult<BinOperator> {
-    map(whitespace_delim(keyword_infix_add), |_| {
+fn infix_add_op<'a>(allow_and: bool) -> impl Fn(&'a str) -> ReadResult<BinOperator> {
+    map(whitespace_delim(keyword_infix_add(allow_and)), |_| {
         BinOperator::AddOrAnd
-    })(s)
+    })
 }
 
 fn keyword_infix_sub(s: &str) -> ReadResult<&str> {
@@ -827,7 +873,10 @@ fn prefix_xor(s: &str) -> ReadResult<Expr> {
 
 fn prefix_not(s: &str) -> ReadResult<Expr> {
     map(
-        preceded(terminated(tag("not"), whitespace0), value),
+        preceded(
+            terminated(tag("not"), whitespace0),
+            alt((value_lit, value_var)),
+        ),
         Expr::Not,
     )(s)
 }
@@ -963,11 +1012,23 @@ fn parses_report_closing() {
 fn parses_paragraph_declaration() {
     assert_eq!(
         paragraph_declaration("I learned how to fly."),
-        Ok(("", ("how to fly", None)))
+        Ok(("", ("how to fly", None, vec![])))
     );
     assert_eq!(
-        paragraph_declaration("I learned to say hello world with a number:"),
-        Ok(("", ("to say hello world", Some(Number))))
+        paragraph_declaration("I learned to say hello with a number:"),
+        Ok(("", ("to say hello", Some(Number), vec![])))
+    );
+    assert_eq!(
+        paragraph_declaration("I learned to make friends with a phrase using the number of elements of harmony and the word hello:"),
+        Ok(("", ("to make friends", Some(Chars), vec![Arg(Number, "of elements of harmony"), Arg(Chars, "hello")])))
+    );
+}
+
+#[test]
+fn parses_arg() {
+    assert_eq!(
+        paragraph_arg("the word hello"),
+        Ok(("", Arg(Chars, "hello")))
     );
 }
 
@@ -1097,21 +1158,27 @@ fn parses_literal() {
 
 #[test]
 fn parses_infix_op() {
-    assert_eq!(infix_op(" added to "), Ok(("", BinOperator::AddOrAnd)));
-    assert_eq!(infix_op(" minus "), Ok(("", BinOperator::Sub)));
-    assert_eq!(infix_op(" multiplied with "), Ok(("", BinOperator::Mul)));
-    assert_eq!(infix_op(" divided by "), Ok(("", BinOperator::Div)));
-    assert_eq!(infix_op(" or "), Ok(("", BinOperator::Or)));
+    assert_eq!(
+        infix_op(true)(" added to "),
+        Ok(("", BinOperator::AddOrAnd))
+    );
+    assert_eq!(infix_op(true)(" minus "), Ok(("", BinOperator::Sub)));
+    assert_eq!(
+        infix_op(true)(" multiplied with "),
+        Ok(("", BinOperator::Mul))
+    );
+    assert_eq!(infix_op(true)(" divided by "), Ok(("", BinOperator::Div)));
+    assert_eq!(infix_op(true)(" or "), Ok(("", BinOperator::Or)));
 }
 
 #[test]
 fn parses_infix_term() {
     assert_eq!(
-        infix_term("1"),
+        infix_term(true)("1"),
         Ok(("", Expr::Val(Value::Lit(Literal::Number(1f64)))))
     );
     assert_eq!(
-        infix_term("1 added to 2"),
+        infix_term(true)("1 added to 2"),
         Ok((
             "",
             Expr::BinOp(
@@ -1122,7 +1189,7 @@ fn parses_infix_term() {
         ))
     );
     assert_eq!(
-        infix_term("2 plus 1 times 3"),
+        infix_term(true)("2 plus 1 times 3"),
         Ok((
             "",
             Expr::BinOp(
@@ -1137,7 +1204,7 @@ fn parses_infix_term() {
         ))
     );
     assert_eq!(
-        infix_term("true and false"),
+        infix_term(true)("true and false"),
         Ok((
             "",
             Expr::BinOp(
@@ -1148,7 +1215,7 @@ fn parses_infix_term() {
         ))
     );
     assert_eq!(
-        infix_term("true or false and false"),
+        infix_term(true)("true or false and false"),
         Ok((
             "",
             Expr::BinOp(
@@ -1211,7 +1278,7 @@ fn parses_prefix_term() {
         ))
     );
     assert_eq!(
-        expr("either true or false"),
+        expr(true)("either true or false"),
         Ok((
             "",
             Expr::BinOp(
@@ -1234,7 +1301,7 @@ fn parses_not() {
         Ok(("", Expr::Not(Value::Var(Variable("a tree")))))
     );
     assert_eq!(
-        expr("not true and false"),
+        expr(true)("not true and false"),
         Ok((
             "",
             Expr::BinOp(
@@ -1249,80 +1316,78 @@ fn parses_not() {
 #[test]
 fn parses_comparison() {
     assert_eq!(
-        expr("Rainbow Dash is cool"),
+        expr(true)("Rainbow Dash is cool"),
         Ok((
             "",
             Expr::BinOp(
                 BinOperator::Equal,
-                Box::new(Expr::Val(Value::Var(Variable("Rainbow Dash")))),
-                Box::new(Expr::Val(Value::Var(Variable("cool")))),
+                Box::new(Expr::Call(Call("Rainbow Dash", vec![]))),
+                Box::new(Expr::Call(Call("cool", vec![]))),
             )
         ))
     );
     assert_eq!(
-        expr("Fluttershy isn't loud"),
+        expr(true)("Fluttershy isn't loud"),
         Ok((
             "",
             Expr::BinOp(
                 BinOperator::NotEqual,
-                Box::new(Expr::Val(Value::Var(Variable("Fluttershy")))),
-                Box::new(Expr::Val(Value::Var(Variable("loud")))),
+                Box::new(Expr::Call(Call("Fluttershy", vec![]))),
+                Box::new(Expr::Call(Call("loud", vec![]))),
             )
         ))
     );
     assert_eq!(
-        expr("the number of cupcakes is less than 10"),
+        expr(true)("the number of cupcakes is less than 10"),
         Ok((
             "",
             Expr::BinOp(
                 BinOperator::LessThan,
-                Box::new(Expr::Val(Value::Var(Variable("the number of cupcakes")))),
+                Box::new(Expr::Call(Call("the number of cupcakes", vec![]))),
                 Box::new(Expr::Val(Value::Lit(Literal::Number(10f64)))),
             )
         ))
     );
     assert_eq!(
-        expr("the number of pies is not less than 10"),
+        expr(true)("the number of pies is not less than 10"),
         Ok((
             "",
             Expr::BinOp(
                 BinOperator::GreaterThanOrEqual,
-                Box::new(Expr::Val(Value::Var(Variable("the number of pies")))),
+                Box::new(Expr::Call(Call("the number of pies", vec![]))),
                 Box::new(Expr::Val(Value::Lit(Literal::Number(10f64)))),
             )
         ))
     );
     assert_eq!(
-        expr("the number of cakes is more than 10"),
+        expr(true)("the number of cakes is more than 10"),
         Ok((
             "",
             Expr::BinOp(
                 BinOperator::GreaterThan,
-                Box::new(Expr::Val(Value::Var(Variable("the number of cakes")))),
+                Box::new(Expr::Call(Call("the number of cakes", vec![]))),
                 Box::new(Expr::Val(Value::Lit(Literal::Number(10f64)))),
             )
         ))
     );
     assert_eq!(
-        expr("the number of cute animals isn't greater than 100"),
+        expr(true)("the number of cute animals isn't greater than 100"),
         Ok((
             "",
             Expr::BinOp(
                 BinOperator::LessThanOrEqual,
-                Box::new(Expr::Val(Value::Var(Variable(
-                    "the number of cute animals"
-                )))),
+                Box::new(Expr::Call(Call("the number of cute animals", vec![]))),
                 Box::new(Expr::Val(Value::Lit(Literal::Number(100f64)))),
             )
         ))
     );
     assert_eq!(
-        expr("Applejack has more than 50"),
+        expr(true)("Applejack has more than 50"),
         Ok((
             "",
             Expr::BinOp(
                 BinOperator::GreaterThan,
-                Box::new(Expr::Val(Value::Var(Variable("Applejack")))),
+                Box::new(Expr::Call(Call("Applejack", vec![]))),
                 Box::new(Expr::Val(Value::Lit(Literal::Number(50f64)))),
             )
         ))
@@ -1332,17 +1397,17 @@ fn parses_comparison() {
 #[test]
 fn parses_concat() {
     assert_eq!(
-        expr("Applejack\" jugs of cider on the wall\""),
+        expr(true)("Applejack\" jugs of cider on the wall\""),
         Ok((
             "",
             Expr::Concat(vec![
-                Expr::Val(Value::Var(Variable("Applejack"))),
+                Expr::Call(Call("Applejack", vec![])),
                 Expr::Val(Value::Lit(Literal::Chars(" jugs of cider on the wall")))
             ])
         ))
     );
     assert_eq!(
-        expr("\"It needs to be about \" 20 \"% cooler\""),
+        expr(true)("\"It needs to be about \" 20 \"% cooler\""),
         Ok((
             "",
             Expr::Concat(vec![
@@ -1371,9 +1436,7 @@ fn parses_print_statement() {
         statement("I sang the elements of harmony count."),
         Ok((
             "",
-            Statement::Print(Expr::Val(Value::Var(Variable(
-                "the elements of harmony count"
-            ))))
+            Statement::Print(Expr::Call(Call("the elements of harmony count", vec![])))
         ))
     );
     assert_eq!(
@@ -1525,8 +1588,48 @@ fn parses_decrement_statement() {
 fn parses_call_statement() {
     assert_eq!(
         statement("I remembered how to fly."),
-        Ok(("", Statement::Call(Variable("how to fly"))))
+        Ok(("", Statement::Call(Call("how to fly", vec![]))))
     );
+    assert_eq!(
+        statement("I remembered how to fly using \"Twilight Sparkle\"."),
+        Ok((
+            "",
+            Statement::Call(Call(
+                "how to fly",
+                vec![Expr::Val(Value::Lit(Literal::Chars("Twilight Sparkle")))]
+            ))
+        ))
+    );
+    assert_eq!(
+        statement("I remembered how to fly using Rainbow Dash and Fluttershy."),
+        Ok((
+            "",
+            Statement::Call(Call(
+                "how to fly",
+                vec![
+                    Expr::Call(Call("Rainbow Dash", vec![])),
+                    Expr::Call(Call("Fluttershy", vec![]))
+                ]
+            ))
+        ))
+    )
+}
+
+#[test]
+fn parses_call_expr() {
+    assert_eq!(
+        expr(true)("how to fly using Rainbow Dash and Fluttershy"),
+        Ok((
+            "",
+            Expr::Call(Call(
+                "how to fly",
+                vec![
+                    Expr::Call(Call("Rainbow Dash", vec![])),
+                    Expr::Call(Call("Fluttershy", vec![]))
+                ]
+            ))
+        ))
+    )
 }
 
 #[test]
@@ -1535,7 +1638,7 @@ fn parses_return_statement() {
         statement("Then you get a pie!"),
         Ok((
             "",
-            Statement::Return(Expr::Val(Value::Var(Variable("a pie"))))
+            Statement::Return(Expr::Call(Call("a pie", vec![])))
         ))
     );
 }

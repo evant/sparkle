@@ -14,11 +14,11 @@ use target_lexicon::Triple;
 
 use crate::error::ReportError;
 use crate::pst;
-use crate::pst::{BinOperator, Expr, Literal, Paragraph, Report, Statement};
+use crate::pst::{BinOperator, Call, Expr, Literal, Paragraph, Report, Statement};
 use crate::types::Type::{Boolean, Chars, Number};
 use crate::vars::{Callable, Callables};
 use cranelift::codegen::ir::StackSlot;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
 pub fn send_out<'a>(report: &'a Report, name: &str, target: &str) -> Result<(), ReportError> {
     let mut sender = faerie_sender(name, target)?;
@@ -210,7 +210,8 @@ fn declare_paragraph<'a, B: Backend>(
 ) -> Result<FuncId, ReportError> {
     let mut sig = sender.module.make_signature();
     if let Some(type_) = paragraph.return_type {
-        sig.returns.push(AbiParam::new(ir_type(sender.pointer_type, type_)));
+        sig.returns
+            .push(AbiParam::new(ir_type(sender.pointer_type, type_)));
     }
     let id = sender
         .module
@@ -233,7 +234,12 @@ fn send_paragraph<'a, B: Backend>(
     let mut function_sender = FunctionSender::new(globals, builder);
 
     if let Some(return_type) = paragraph.return_type {
-        function_sender.builder.func.signature.returns.push(AbiParam::new(ir_type(sender.pointer_type, return_type)));
+        function_sender
+            .builder
+            .func
+            .signature
+            .returns
+            .push(AbiParam::new(ir_type(sender.pointer_type, return_type)));
     }
 
     let entry_ebb = function_sender.builder.create_ebb();
@@ -241,7 +247,12 @@ fn send_paragraph<'a, B: Backend>(
     function_sender.builder.seal_block(entry_ebb);
 
     for statement in paragraph.statements.iter() {
-        send_statement(statement, paragraph.return_type, sender, &mut function_sender)?;
+        send_statement(
+            statement,
+            paragraph.return_type,
+            sender,
+            &mut function_sender,
+        )?;
     }
 
     if paragraph.return_type.is_none() {
@@ -271,9 +282,16 @@ fn send_statement<'a, B: Backend>(
         Statement::Assign(var, expr) => send_assign_statement(var, expr, sender, function_sender),
         Statement::Increment(var) => send_increment_statement(var, function_sender),
         Statement::Decrement(var) => send_decrement_statement(var, function_sender),
-        Statement::If(cond, if_, else_) => send_if_else(cond, if_, else_, return_type, sender, function_sender),
-        Statement::While(cond, body) => send_while_statement(cond, body, return_type, sender, function_sender),
-        Statement::Call(var) => send_call(var, sender, function_sender),
+        Statement::If(cond, if_, else_) => {
+            send_if_else(cond, if_, else_, return_type, sender, function_sender)
+        }
+        Statement::While(cond, body) => {
+            send_while_statement(cond, body, return_type, sender, function_sender)
+        }
+        Statement::Call(call) => {
+            send_call(call, sender, function_sender)?;
+            Ok(())
+        }
         Statement::Return(expr) => send_return(expr, return_type, sender, function_sender),
     }
 }
@@ -473,16 +491,21 @@ fn send_while_statement<'a, B: Backend>(
 }
 
 fn send_call<B: Backend>(
-    var: &pst::Variable,
+    call: &Call,
     sender: &mut Sender<B>,
     function_sender: &mut FunctionSender,
-) -> Result<(), ReportError> {
-    let (type_, func_id) = match function_sender.vars.get(var.0)? {
-        Callable::Var(_, _, _) => {
-            return Err(ReportError::TypeError(format!(
-                "Sorry, you can't call a variable: '{}'",
-                var.0
-            )))
+) -> Result<Option<(crate::types::Type, Value)>, ReportError> {
+    let Call(name, args) = call;
+    let (type_, func_id) = match function_sender.vars.get(name)? {
+        Callable::Var(type_, slot, _) => {
+            if args.is_empty() {
+                return Ok(Some(send_var(*type_, *slot, sender, function_sender)));
+            } else {
+                return Err(ReportError::TypeError(format!(
+                    "Sorry, you can't call a variable: '{}'",
+                    name
+                )));
+            }
         }
         Callable::Func(type_, func_id) => (type_, func_id),
     };
@@ -490,9 +513,15 @@ fn send_call<B: Backend>(
     let local_callee = sender
         .module
         .declare_func_in_func(*func_id, &mut function_sender.builder.func);
-    let _call = function_sender.builder.ins().call(local_callee, &[]);
+    let result = function_sender.builder.ins().call(local_callee, &[]);
 
-    Ok(())
+    match type_ {
+        None => Ok(None),
+        Some(t) => {
+            let v = function_sender.builder.inst_results(result)[0];
+            Ok(Some((*t, v)))
+        }
+    }
 }
 
 fn send_return<B: Backend>(
@@ -501,7 +530,9 @@ fn send_return<B: Backend>(
     sender: &mut Sender<B>,
     function_sender: &mut FunctionSender,
 ) -> Result<(), ReportError> {
-    let return_type = return_type.ok_or_else(|| ReportError::TypeError("You need to declare the type you are returning".to_string()))?;
+    let return_type = return_type.ok_or_else(|| {
+        ReportError::TypeError("You need to declare the type you are returning".to_string())
+    })?;
 
     let (expr_type, expr_value) = send_expression(expr, sender, function_sender)?;
     return_type.check(expr_type)?;
@@ -746,6 +777,12 @@ fn send_expression<'a, B: Backend>(
             (Chars, buff)
         }
         Expr::Val(val) => send_value(val, sender, function_sender)?,
+        Expr::Call(call) => send_call(call, sender, function_sender)?.ok_or_else(|| {
+            ReportError::TypeError(format!(
+                "You need to return something from '{}' if you want to use it",
+                call.0
+            ))
+        })?,
     };
 
     Ok(result)
@@ -792,31 +829,40 @@ fn send_value<'a, B: Backend>(
     let result = match value {
         pst::Value::Lit(lit) => send_literal(lit, sender, function_sender)?,
         pst::Value::Var(var) => match function_sender.vars.get(var.0)? {
-            Callable::Var(type_, slot, _) => {
-                let v = function_sender.builder.ins().stack_load(
-                    ir_type(sender.pointer_type, *type_),
-                    *slot,
-                    0,
-                );
-                (*type_, v)
-            }
-            Callable::Func(type_, func_id) => {
-                match type_ {
-                    None => return Err(ReportError::TypeError(format!("You need to get something from '{}'", var.0))),
-                    Some(t) => {
-                        let local_callee = sender
-                            .module
-                            .declare_func_in_func(*func_id, &mut function_sender.builder.func);
-                        let call = function_sender.builder.ins().call(local_callee, &[]);
-                        let v = function_sender.builder.inst_results(call)[0];
-                        (*t, v)
-                    },
+            Callable::Var(type_, slot, _) => send_var(*type_, *slot, sender, function_sender),
+            Callable::Func(type_, func_id) => match type_ {
+                None => {
+                    return Err(ReportError::TypeError(format!(
+                        "You need to get something from '{}'",
+                        var.0
+                    )))
                 }
-            }
+                Some(t) => {
+                    let local_callee = sender
+                        .module
+                        .declare_func_in_func(*func_id, &mut function_sender.builder.func);
+                    let call = function_sender.builder.ins().call(local_callee, &[]);
+                    let v = function_sender.builder.inst_results(call)[0];
+                    (*t, v)
+                }
+            },
         },
     };
 
     Ok(result)
+}
+
+fn send_var<B: Backend>(
+    type_: crate::types::Type,
+    slot: StackSlot,
+    sender: &mut Sender<B>,
+    function_sender: &mut FunctionSender,
+) -> (crate::types::Type, Value) {
+    let v = function_sender
+        .builder
+        .ins()
+        .stack_load(ir_type(sender.pointer_type, type_), slot, 0);
+    (type_, v)
 }
 
 fn send_literal<'a, B: Backend>(
@@ -1035,12 +1081,6 @@ impl<'a, 'b> FunctionSender<'a, 'b> {
             vars: globals.create_child(),
         }
     }
-}
-
-struct VarData {
-    type_: crate::types::Type,
-    is_const: bool,
-    slot: StackSlot,
 }
 
 fn ir_type(pointer_type: Type, type_: crate::types::Type) -> Type {
