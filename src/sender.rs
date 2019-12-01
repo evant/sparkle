@@ -712,8 +712,8 @@ fn send_expression<'a, B: Backend>(
                 }
             }?
         }
-        Expr::Not(val) => {
-            let (type_, value) = send_value(val, sender, function_sender)?;
+        Expr::Not(expr) => {
+            let (type_, value) = send_expression(expr, sender, function_sender)?;
 
             Boolean.check(type_)?;
             let b = function_sender
@@ -776,7 +776,7 @@ fn send_expression<'a, B: Backend>(
 
             (Chars, buff)
         }
-        Expr::Val(val) => send_value(val, sender, function_sender)?,
+        Expr::Lit(lit) => send_literal(lit, sender, function_sender)?,
         Expr::Call(call) => send_call(call, sender, function_sender)?.ok_or_else(|| {
             ReportError::TypeError(format!(
                 "You need to return something from '{}' if you want to use it",
@@ -819,37 +819,6 @@ fn send_comparison<'a, B: Backend>(
                 .icmp(icc, left_value, right_value),
         },
     ))
-}
-
-fn send_value<'a, B: Backend>(
-    value: &pst::Value<'a>,
-    sender: &mut Sender<B>,
-    function_sender: &mut FunctionSender,
-) -> Result<(crate::types::Type, Value), ReportError> {
-    let result = match value {
-        pst::Value::Lit(lit) => send_literal(lit, sender, function_sender)?,
-        pst::Value::Var(var) => match function_sender.vars.get(var.0)? {
-            Callable::Var(type_, slot, _) => send_var(*type_, *slot, sender, function_sender),
-            Callable::Func(type_, func_id) => match type_ {
-                None => {
-                    return Err(ReportError::TypeError(format!(
-                        "You need to get something from '{}'",
-                        var.0
-                    )))
-                }
-                Some(t) => {
-                    let local_callee = sender
-                        .module
-                        .declare_func_in_func(*func_id, &mut function_sender.builder.func);
-                    let call = function_sender.builder.ins().call(local_callee, &[]);
-                    let v = function_sender.builder.inst_results(call)[0];
-                    (*t, v)
-                }
-            },
-        },
-    };
-
-    Ok(result)
 }
 
 fn send_var<B: Backend>(

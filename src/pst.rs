@@ -46,9 +46,9 @@ pub struct Variable<'a>(pub &'a str);
 #[derive(Debug, PartialEq, Clone)]
 pub enum Expr<'a> {
     BinOp(BinOperator, Box<Expr<'a>>, Box<Expr<'a>>),
-    Not(Value<'a>),
+    Not(Box<Expr<'a>>),
     Concat(Vec<Expr<'a>>),
-    Val(Value<'a>),
+    Lit(Literal<'a>),
     Call(Call<'a>),
 }
 
@@ -66,12 +66,6 @@ pub enum BinOperator {
     GreaterThan,
     LessThanOrEqual,
     GreaterThanOrEqual,
-}
-
-#[derive(Debug, PartialEq, Clone)]
-pub enum Value<'a> {
-    Lit(Literal<'a>),
-    Var(Variable<'a>),
 }
 
 #[derive(Debug, PartialEq, Clone)]

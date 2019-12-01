@@ -9,9 +9,7 @@ use nom::sequence::{delimited, pair, preceded, separated_pair, terminated, tuple
 use nom::IResult;
 
 use crate::error::ReportError;
-use crate::pst::{
-    Arg, BinOperator, Call, Expr, Literal, Paragraph, Report, Statement, Value, Variable,
-};
+use crate::pst::{Arg, BinOperator, Call, Expr, Literal, Paragraph, Report, Statement, Variable};
 use crate::types::Type;
 use crate::types::Type::{Boolean, Chars, Number};
 
@@ -523,7 +521,11 @@ fn return_statement(s: &str) -> ReadResult<Statement> {
 }
 
 fn expr_term<'a>(allow_infix_and: bool) -> impl Fn(&'a str) -> ReadResult<Expr> {
-    alt((prefix_term, infix_term(allow_infix_and), value_expr))
+    alt((
+        prefix_term(allow_infix_and),
+        infix_term(allow_infix_and),
+        value_expr(allow_infix_and),
+    ))
 }
 
 fn expr<'a>(allow_infix_and: bool) -> impl Fn(&'a str) -> ReadResult<Expr> {
@@ -562,12 +564,12 @@ fn expr<'a>(allow_infix_and: bool) -> impl Fn(&'a str) -> ReadResult<Expr> {
 }
 
 fn expr_string(s: &str) -> ReadResult<Expr> {
-    map(string, |s| Expr::Val(Value::Lit(s)))(s)
+    map(string, Expr::Lit)(s)
 }
 
 fn is_chars_literal(expr: &Expr) -> bool {
     match expr {
-        Expr::Val(Value::Lit(Literal::Chars(_))) => true,
+        Expr::Lit(Literal::Chars(_)) => true,
         _ => false,
     }
 }
@@ -576,8 +578,8 @@ fn call_expr(s: &str) -> ReadResult<Expr> {
     map(call, Expr::Call)(s)
 }
 
-fn value_expr(s: &str) -> ReadResult<Expr> {
-    alt((prefix_not, map(value, Expr::Val), call_expr))(s)
+fn value_expr<'a>(allow_infix_and: bool) -> impl Fn(&'a str) -> ReadResult<Expr> {
+    alt((prefix_not(allow_infix_and), lit_expr, call_expr))
 }
 
 fn literal(s: &str) -> ReadResult<Literal> {
@@ -601,16 +603,8 @@ fn call(s: &str) -> ReadResult<Call> {
     )(s)
 }
 
-fn value(s: &str) -> ReadResult<Value> {
-    value_lit(s)
-}
-
-fn value_lit(s: &str) -> ReadResult<Value> {
-    map(literal, Value::Lit)(s)
-}
-
-fn value_var(s: &str) -> ReadResult<Value> {
-    map(var, Value::Var)(s)
+fn lit_expr(s: &str) -> ReadResult<Expr> {
+    map(literal, Expr::Lit)(s)
 }
 
 fn prefix<'a, O1, O2, O3, P1, P2, V1, V2>(
@@ -633,6 +627,7 @@ where
 
 fn infix_term<'a>(allow_and: bool) -> impl Fn(&'a str) -> ReadResult<Expr> {
     move |s| {
+        let value_expr = value_expr(allow_and);
         let (s, init) = value_expr(s)?;
         fold_many0(
             pair(infix_op(allow_and), value_expr),
@@ -642,8 +637,14 @@ fn infix_term<'a>(allow_and: bool) -> impl Fn(&'a str) -> ReadResult<Expr> {
     }
 }
 
-fn prefix_term(s: &str) -> ReadResult<Expr> {
-    alt((prefix_add, prefix_sub, prefix_mul, prefix_div, prefix_xor))(s)
+fn prefix_term<'a>(allow_infix_and: bool) -> impl Fn(&'a str) -> ReadResult<Expr> {
+    alt((
+        prefix_add(allow_infix_and),
+        prefix_sub(allow_infix_and),
+        prefix_mul(allow_infix_and),
+        prefix_div(allow_infix_and),
+        prefix_xor(allow_infix_and),
+    ))
 }
 
 fn infix_op<'a>(allow_and: bool) -> impl Fn(&'a str) -> ReadResult<BinOperator> {
@@ -790,14 +791,19 @@ fn infix_gte_op(s: &str) -> ReadResult<BinOperator> {
     )(s)
 }
 
-fn prefix_add(s: &str) -> ReadResult<Expr> {
+fn prefix_add<'a>(allow_infix_and: bool) -> impl Fn(&'a str) -> ReadResult<Expr> {
     map(
-        prefix(tag("add"), tag("and"), value_expr, value_expr),
+        prefix(
+            tag("add"),
+            tag("and"),
+            value_expr(allow_infix_and),
+            value_expr(allow_infix_and),
+        ),
         |(left, right)| Expr::BinOp(BinOperator::AddOrAnd, Box::new(left), Box::new(right)),
-    )(s)
+    )
 }
 
-fn prefix_sub(s: &str) -> ReadResult<Expr> {
+fn prefix_sub<'a>(allow_infix_and: bool) -> impl Fn(&'a str) -> ReadResult<Expr> {
     map(
         alt((
             prefix(
@@ -809,23 +815,28 @@ fn prefix_sub(s: &str) -> ReadResult<Expr> {
                     tag("between"),
                 ))),
                 tag("and"),
-                value_expr,
-                value_expr,
+                value_expr(allow_infix_and),
+                value_expr(allow_infix_and),
             ),
-            prefix(tag("subtract"), tag("from"), value_expr, value_expr),
+            prefix(
+                tag("subtract"),
+                tag("from"),
+                value_expr(allow_infix_and),
+                value_expr(allow_infix_and),
+            ),
         )),
         |(left, right)| Expr::BinOp(BinOperator::Sub, Box::new(left), Box::new(right)),
-    )(s)
+    )
 }
 
-fn prefix_mul(s: &str) -> ReadResult<Expr> {
+fn prefix_mul<'a>(allow_infix_and: bool) -> impl Fn(&'a str) -> ReadResult<Expr> {
     map(
         alt((
             prefix(
                 tag("multiply"),
                 alt((tag("by"), tag("and"))),
-                value_expr,
-                value_expr,
+                value_expr(allow_infix_and),
+                value_expr(allow_infix_and),
             ),
             prefix(
                 recognize(tuple((
@@ -836,24 +847,24 @@ fn prefix_mul(s: &str) -> ReadResult<Expr> {
                     tag("of"),
                 ))),
                 tag("and"),
-                value_expr,
-                value_expr,
+                value_expr(allow_infix_and),
+                value_expr(allow_infix_and),
             ),
         )),
         |(left, right)| Expr::BinOp(BinOperator::Mul, Box::new(left), Box::new(right)),
-    )(s)
+    )
 }
 
-fn prefix_div(s: &str) -> ReadResult<Expr> {
+fn prefix_div<'a>(allow_infix_and: bool) -> impl Fn(&'a str) -> ReadResult<Expr> {
     map(
         prefix(
             tag("divide"),
             alt((tag("by"), tag("and"))),
-            value_expr,
-            value_expr,
+            value_expr(allow_infix_and),
+            value_expr(allow_infix_and),
         ),
         |(left, right)| Expr::BinOp(BinOperator::Div, Box::new(left), Box::new(right)),
-    )(s)
+    )
 }
 
 fn infix_and_op(s: &str) -> ReadResult<BinOperator> {
@@ -864,21 +875,23 @@ fn infix_or_op(s: &str) -> ReadResult<BinOperator> {
     map(whitespace_delim(tag("or")), |_| BinOperator::Or)(s)
 }
 
-fn prefix_xor(s: &str) -> ReadResult<Expr> {
+fn prefix_xor<'a>(allow_infix_and: bool) -> impl Fn(&'a str) -> ReadResult<Expr> {
     map(
-        prefix(tag("either"), tag("or"), value_expr, value_expr),
+        prefix(
+            tag("either"),
+            tag("or"),
+            value_expr(allow_infix_and),
+            value_expr(allow_infix_and),
+        ),
         |(left, right)| Expr::BinOp(BinOperator::EitherOr, Box::new(left), Box::new(right)),
-    )(s)
+    )
 }
 
-fn prefix_not(s: &str) -> ReadResult<Expr> {
+fn prefix_not<'a>(allow_infix_and: bool) -> impl Fn(&'a str) -> ReadResult<Expr> {
     map(
-        preceded(
-            terminated(tag("not"), whitespace0),
-            alt((value_lit, value_var)),
-        ),
-        Expr::Not,
-    )(s)
+        preceded(terminated(tag("not"), whitespace1), alt((lit_expr, call_expr))),
+        |e| Expr::Not(Box::new(e)),
+    )
 }
 
 fn boolean(s: &str) -> ReadResult<Literal> {
@@ -1060,9 +1073,7 @@ fn parses_paragraph() {
                 mane: true,
                 args: vec![],
                 return_type: None,
-                statements: vec![Statement::Print(Expr::Val(Value::Lit(Literal::Chars(
-                    "Fly!"
-                ))))],
+                statements: vec![Statement::Print(Expr::Lit(Literal::Chars("Fly!")))],
             }
         ))
     );
@@ -1083,13 +1094,13 @@ fn parses_paragraph() {
                 args: vec![],
                 return_type: None,
                 statements: vec![
-                    Statement::Print(Expr::Val(Value::Lit(Literal::Chars("Fly1!")))),
+                    Statement::Print(Expr::Lit(Literal::Chars("Fly1!"))),
                     Statement::Print(Expr::BinOp(
                         BinOperator::AddOrAnd,
-                        Box::new(Expr::Val(Value::Lit(Literal::Number(5f64)))),
-                        Box::new(Expr::Val(Value::Lit(Literal::Number(6f64)))),
+                        Box::new(Expr::Lit(Literal::Number(5f64))),
+                        Box::new(Expr::Lit(Literal::Number(6f64))),
                     )),
-                    Statement::Print(Expr::Val(Value::Lit(Literal::Boolean(true)))),
+                    Statement::Print(Expr::Lit(Literal::Boolean(true))),
                 ],
             }
         ))
@@ -1119,9 +1130,7 @@ fn parses_report() {
                     mane: true,
                     args: vec![],
                     return_type: None,
-                    statements: vec![Statement::Print(Expr::Val(Value::Lit(Literal::Chars(
-                        "Fly!"
-                    ))))],
+                    statements: vec![Statement::Print(Expr::Lit(Literal::Chars("Fly!")))],
                 }],
                 writer: " Twilight Sparkle",
             }
@@ -1175,7 +1184,7 @@ fn parses_infix_op() {
 fn parses_infix_term() {
     assert_eq!(
         infix_term(true)("1"),
-        Ok(("", Expr::Val(Value::Lit(Literal::Number(1f64)))))
+        Ok(("", Expr::Lit(Literal::Number(1f64))))
     );
     assert_eq!(
         infix_term(true)("1 added to 2"),
@@ -1183,8 +1192,8 @@ fn parses_infix_term() {
             "",
             Expr::BinOp(
                 BinOperator::AddOrAnd,
-                Box::new(Expr::Val(Value::Lit(Literal::Number(1f64)))),
-                Box::new(Expr::Val(Value::Lit(Literal::Number(2f64)))),
+                Box::new(Expr::Lit(Literal::Number(1f64))),
+                Box::new(Expr::Lit(Literal::Number(2f64))),
             )
         ))
     );
@@ -1196,10 +1205,10 @@ fn parses_infix_term() {
                 BinOperator::Mul,
                 Box::new(Expr::BinOp(
                     BinOperator::AddOrAnd,
-                    Box::new(Expr::Val(Value::Lit(Literal::Number(2f64)))),
-                    Box::new(Expr::Val(Value::Lit(Literal::Number(1f64)))),
+                    Box::new(Expr::Lit(Literal::Number(2f64))),
+                    Box::new(Expr::Lit(Literal::Number(1f64))),
                 )),
-                Box::new(Expr::Val(Value::Lit(Literal::Number(3f64)))),
+                Box::new(Expr::Lit(Literal::Number(3f64))),
             )
         ))
     );
@@ -1209,8 +1218,8 @@ fn parses_infix_term() {
             "",
             Expr::BinOp(
                 BinOperator::AddOrAnd,
-                Box::new(Expr::Val(Value::Lit(Literal::Boolean(true)))),
-                Box::new(Expr::Val(Value::Lit(Literal::Boolean(false)))),
+                Box::new(Expr::Lit(Literal::Boolean(true))),
+                Box::new(Expr::Lit(Literal::Boolean(false))),
             )
         ))
     );
@@ -1222,10 +1231,10 @@ fn parses_infix_term() {
                 BinOperator::AddOrAnd,
                 Box::new(Expr::BinOp(
                     BinOperator::Or,
-                    Box::new(Expr::Val(Value::Lit(Literal::Boolean(true)))),
-                    Box::new(Expr::Val(Value::Lit(Literal::Boolean(false)))),
+                    Box::new(Expr::Lit(Literal::Boolean(true))),
+                    Box::new(Expr::Lit(Literal::Boolean(false))),
                 )),
-                Box::new(Expr::Val(Value::Lit(Literal::Boolean(false)))),
+                Box::new(Expr::Lit(Literal::Boolean(false))),
             )
         ))
     );
@@ -1234,46 +1243,46 @@ fn parses_infix_term() {
 #[test]
 fn parses_prefix_term() {
     assert_eq!(
-        prefix_term("add 1 and 2"),
+        prefix_term(true)("add 1 and 2"),
         Ok((
             "",
             Expr::BinOp(
                 BinOperator::AddOrAnd,
-                Box::new(Expr::Val(Value::Lit(Literal::Number(1f64)))),
-                Box::new(Expr::Val(Value::Lit(Literal::Number(2f64)))),
+                Box::new(Expr::Lit(Literal::Number(1f64))),
+                Box::new(Expr::Lit(Literal::Number(2f64))),
             )
         ))
     );
     assert_eq!(
-        prefix_term("the difference between 2 and 1"),
+        prefix_term(true)("the difference between 2 and 1"),
         Ok((
             "",
             Expr::BinOp(
                 BinOperator::Sub,
-                Box::new(Expr::Val(Value::Lit(Literal::Number(2f64)))),
-                Box::new(Expr::Val(Value::Lit(Literal::Number(1f64)))),
+                Box::new(Expr::Lit(Literal::Number(2f64))),
+                Box::new(Expr::Lit(Literal::Number(1f64))),
             )
         ))
     );
     assert_eq!(
-        prefix_term("the product of 2 and 1"),
+        prefix_term(true)("the product of 2 and 1"),
         Ok((
             "",
             Expr::BinOp(
                 BinOperator::Mul,
-                Box::new(Expr::Val(Value::Lit(Literal::Number(2f64)))),
-                Box::new(Expr::Val(Value::Lit(Literal::Number(1f64)))),
+                Box::new(Expr::Lit(Literal::Number(2f64))),
+                Box::new(Expr::Lit(Literal::Number(1f64))),
             )
         ))
     );
     assert_eq!(
-        prefix_term("divide 2 by 1"),
+        prefix_term(true)("divide 2 by 1"),
         Ok((
             "",
             Expr::BinOp(
                 BinOperator::Div,
-                Box::new(Expr::Val(Value::Lit(Literal::Number(2f64)))),
-                Box::new(Expr::Val(Value::Lit(Literal::Number(1f64)))),
+                Box::new(Expr::Lit(Literal::Number(2f64))),
+                Box::new(Expr::Lit(Literal::Number(1f64))),
             )
         ))
     );
@@ -1283,8 +1292,8 @@ fn parses_prefix_term() {
             "",
             Expr::BinOp(
                 BinOperator::EitherOr,
-                Box::new(Expr::Val(Value::Lit(Literal::Boolean(true)))),
-                Box::new(Expr::Val(Value::Lit(Literal::Boolean(false)))),
+                Box::new(Expr::Lit(Literal::Boolean(true))),
+                Box::new(Expr::Lit(Literal::Boolean(false))),
             )
         ))
     );
@@ -1293,12 +1302,12 @@ fn parses_prefix_term() {
 #[test]
 fn parses_not() {
     assert_eq!(
-        prefix_not("not true"),
-        Ok(("", Expr::Not(Value::Lit(Literal::Boolean(true)))))
+        prefix_not(true)("not true"),
+        Ok(("", Expr::Not(Box::new(Expr::Lit(Literal::Boolean(true))))))
     );
     assert_eq!(
-        prefix_not("not a tree"),
-        Ok(("", Expr::Not(Value::Var(Variable("a tree")))))
+        prefix_not(true)("not a tree"),
+        Ok(("", Expr::Not(Box::new(Expr::Call(Call("a tree", vec![]))))))
     );
     assert_eq!(
         expr(true)("not true and false"),
@@ -1306,8 +1315,8 @@ fn parses_not() {
             "",
             Expr::BinOp(
                 BinOperator::AddOrAnd,
-                Box::new(Expr::Not(Value::Lit(Literal::Boolean(true)))),
-                Box::new(Expr::Val(Value::Lit(Literal::Boolean(false)))),
+                Box::new(Expr::Not(Box::new(Expr::Lit(Literal::Boolean(true))))),
+                Box::new(Expr::Lit(Literal::Boolean(false))),
             )
         ))
     );
@@ -1344,7 +1353,7 @@ fn parses_comparison() {
             Expr::BinOp(
                 BinOperator::LessThan,
                 Box::new(Expr::Call(Call("the number of cupcakes", vec![]))),
-                Box::new(Expr::Val(Value::Lit(Literal::Number(10f64)))),
+                Box::new(Expr::Lit(Literal::Number(10f64))),
             )
         ))
     );
@@ -1355,7 +1364,7 @@ fn parses_comparison() {
             Expr::BinOp(
                 BinOperator::GreaterThanOrEqual,
                 Box::new(Expr::Call(Call("the number of pies", vec![]))),
-                Box::new(Expr::Val(Value::Lit(Literal::Number(10f64)))),
+                Box::new(Expr::Lit(Literal::Number(10f64))),
             )
         ))
     );
@@ -1366,7 +1375,7 @@ fn parses_comparison() {
             Expr::BinOp(
                 BinOperator::GreaterThan,
                 Box::new(Expr::Call(Call("the number of cakes", vec![]))),
-                Box::new(Expr::Val(Value::Lit(Literal::Number(10f64)))),
+                Box::new(Expr::Lit(Literal::Number(10f64))),
             )
         ))
     );
@@ -1377,7 +1386,7 @@ fn parses_comparison() {
             Expr::BinOp(
                 BinOperator::LessThanOrEqual,
                 Box::new(Expr::Call(Call("the number of cute animals", vec![]))),
-                Box::new(Expr::Val(Value::Lit(Literal::Number(100f64)))),
+                Box::new(Expr::Lit(Literal::Number(100f64))),
             )
         ))
     );
@@ -1388,7 +1397,7 @@ fn parses_comparison() {
             Expr::BinOp(
                 BinOperator::GreaterThan,
                 Box::new(Expr::Call(Call("Applejack", vec![]))),
-                Box::new(Expr::Val(Value::Lit(Literal::Number(50f64)))),
+                Box::new(Expr::Lit(Literal::Number(50f64))),
             )
         ))
     )
@@ -1402,7 +1411,7 @@ fn parses_concat() {
             "",
             Expr::Concat(vec![
                 Expr::Call(Call("Applejack", vec![])),
-                Expr::Val(Value::Lit(Literal::Chars(" jugs of cider on the wall")))
+                Expr::Lit(Literal::Chars(" jugs of cider on the wall"))
             ])
         ))
     );
@@ -1411,9 +1420,9 @@ fn parses_concat() {
         Ok((
             "",
             Expr::Concat(vec![
-                Expr::Val(Value::Lit(Literal::Chars("It needs to be about "))),
-                Expr::Val(Value::Lit(Literal::Number(20f64))),
-                Expr::Val(Value::Lit(Literal::Chars("% cooler")))
+                Expr::Lit(Literal::Chars("It needs to be about ")),
+                Expr::Lit(Literal::Number(20f64)),
+                Expr::Lit(Literal::Chars("% cooler"))
             ])
         ))
     );
@@ -1427,8 +1436,8 @@ fn parses_print_statement() {
             "",
             Statement::Print(Expr::BinOp(
                 BinOperator::AddOrAnd,
-                Box::new(Expr::Val(Value::Lit(Literal::Number(1f64)))),
-                Box::new(Expr::Val(Value::Lit(Literal::Number(2f64)))),
+                Box::new(Expr::Lit(Literal::Number(1f64))),
+                Box::new(Expr::Lit(Literal::Number(2f64))),
             ))
         ))
     );
@@ -1444,9 +1453,9 @@ fn parses_print_statement() {
         Ok((
             "",
             Statement::Print(Expr::Concat(vec![
-                Expr::Val(Value::Lit(Literal::Chars("It needs to be about "))),
-                Expr::Val(Value::Lit(Literal::Number(20f64))),
-                Expr::Val(Value::Lit(Literal::Chars("% cooler")))
+                Expr::Lit(Literal::Chars("It needs to be about ")),
+                Expr::Lit(Literal::Number(20f64)),
+                Expr::Lit(Literal::Chars("% cooler"))
             ]))
         ))
     );
@@ -1473,7 +1482,7 @@ fn parses_declare_statement() {
             Statement::Declare(
                 Variable("Applejack's hat"),
                 Some(Chars),
-                Some(Expr::Val(Value::Lit(Literal::Chars("Talluah")))),
+                Some(Expr::Lit(Literal::Chars("Talluah"))),
                 false,
             )
         ))
@@ -1485,7 +1494,7 @@ fn parses_declare_statement() {
             Statement::Declare(
                 Variable("Pinkie Pie"),
                 None,
-                Some(Expr::Val(Value::Lit(Literal::Boolean(true)))),
+                Some(Expr::Lit(Literal::Boolean(true))),
                 true,
             )
         ))
@@ -1498,10 +1507,7 @@ fn parses_assign_statement() {
         statement("Spike's age is now 11!"),
         Ok((
             "",
-            Statement::Assign(
-                Variable("Spike's age"),
-                Expr::Val(Value::Lit(Literal::Number(11f64))),
-            )
+            Statement::Assign(Variable("Spike's age"), Expr::Lit(Literal::Number(11f64)),)
         ))
     );
     assert_eq!(
@@ -1512,8 +1518,8 @@ fn parses_assign_statement() {
                 Variable("Spike's age"),
                 Expr::BinOp(
                     BinOperator::AddOrAnd,
-                    Box::new(Expr::Val(Value::Lit(Literal::Number(10f64)))),
-                    Box::new(Expr::Val(Value::Lit(Literal::Number(1f64)))),
+                    Box::new(Expr::Lit(Literal::Number(10f64))),
+                    Box::new(Expr::Lit(Literal::Number(1f64))),
                 ),
             )
         ))
@@ -1527,10 +1533,10 @@ fn parses_if_else_statement() {
         Ok((
             "",
             Statement::If(
-                Expr::Val(Value::Lit(Literal::Boolean(true))),
-                vec![Statement::Print(Expr::Val(Value::Lit(Literal::Chars(
+                Expr::Lit(Literal::Boolean(true)),
+                vec![Statement::Print(Expr::Lit(Literal::Chars(
                     "Always be honest"
-                ))))],
+                )))],
                 vec![],
             )
         ))
@@ -1540,13 +1546,13 @@ fn parses_if_else_statement() {
         Ok((
             "",
             Statement::If(
-                Expr::Val(Value::Lit(Literal::Boolean(true))),
-                vec![Statement::Print(Expr::Val(Value::Lit(Literal::Chars(
+                Expr::Lit(Literal::Boolean(true)),
+                vec![Statement::Print(Expr::Lit(Literal::Chars(
                     "Always be honest"
-                ))))],
-                vec![Statement::Print(Expr::Val(Value::Lit(Literal::Chars(
+                )))],
+                vec![Statement::Print(Expr::Lit(Literal::Chars(
                     "Never be honest"
-                ))))],
+                )))],
             )
         ))
     );
@@ -1559,10 +1565,8 @@ fn parses_while_statement() {
         Ok((
             "",
             Statement::While(
-                Expr::Val(Value::Lit(Literal::Boolean(true))),
-                vec![Statement::Print(Expr::Val(Value::Lit(Literal::Chars(
-                    "I'm cool!"
-                ))))],
+                Expr::Lit(Literal::Boolean(true)),
+                vec![Statement::Print(Expr::Lit(Literal::Chars("I'm cool!")))],
             )
         ))
     );
@@ -1596,7 +1600,7 @@ fn parses_call_statement() {
             "",
             Statement::Call(Call(
                 "how to fly",
-                vec![Expr::Val(Value::Lit(Literal::Chars("Twilight Sparkle")))]
+                vec![Expr::Lit(Literal::Chars("Twilight Sparkle"))]
             ))
         ))
     );
@@ -1636,9 +1640,6 @@ fn parses_call_expr() {
 fn parses_return_statement() {
     assert_eq!(
         statement("Then you get a pie!"),
-        Ok((
-            "",
-            Statement::Return(Expr::Call(Call("a pie", vec![])))
-        ))
+        Ok(("", Statement::Return(Expr::Call(Call("a pie", vec![])))))
     );
 }
