@@ -5,6 +5,8 @@ pub struct Paragraph<'a> {
     pub name: &'a str,
     pub closing_name: &'a str,
     pub mane: bool,
+    pub args: Vec<Arg<'a>>,
+    pub return_type: Option<Type>,
     pub statements: Vec<Statement<'a>>,
 }
 
@@ -18,6 +20,7 @@ pub enum Statement<'a> {
     If(Expr<'a>, Vec<Statement<'a>>, Vec<Statement<'a>>),
     While(Expr<'a>, Vec<Statement<'a>>),
     Call(Variable<'a>),
+    Return(Expr<'a>),
 }
 
 #[derive(Debug, PartialEq)]
@@ -66,3 +69,6 @@ pub enum Value<'a> {
     Lit(Literal<'a>),
     Var(Variable<'a>),
 }
+
+#[derive(Debug, PartialEq, Clone)]
+pub struct Arg<'a>(&'a str, Type);

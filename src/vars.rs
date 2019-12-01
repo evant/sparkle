@@ -12,7 +12,7 @@ pub struct Callables<'a> {
 #[derive(Copy, Clone)]
 pub enum Callable {
     Var(Type, StackSlot, bool),
-    Func(Type, FuncId),
+    Func(Option<Type>, FuncId),
 }
 
 impl<'a> Callables<'a> {

@@ -10,17 +10,17 @@ pub enum Type {
 }
 
 impl Type {
-    pub fn is_number(&self) -> bool {
-        *self == Type::Number
+    pub fn is_number(self) -> bool {
+        self == Type::Number
     }
 
-    pub fn is_boolean(&self) -> bool {
-        *self == Type::Boolean
+    pub fn is_boolean(self) -> bool {
+        self == Type::Boolean
     }
 
-    pub fn check(&self, expected: Type) -> Result<Type, ReportError> {
+    pub fn check(self, expected: Type) -> Result<Type, ReportError> {
         self.type_check(expected)?;
-        Ok(*self)
+        Ok(self)
     }
 
     pub fn check_bin<T>(

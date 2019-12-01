@@ -37,6 +37,7 @@ fn keyword(s: &str) -> ReadResult<&str> {
         keyword_infix_div,
         keyword_increment,
         keyword_decrement,
+        keyword_declare_paragraph_type,
     ))(s)
 }
 
@@ -76,6 +77,13 @@ where
     P: Fn(&'a str) -> ReadResult<O>,
 {
     delimited(whitespace0, parser, whitespace0)
+}
+
+fn whitespace_delim1<'a, O, P>(parser: P) -> impl Fn(&'a str) -> ReadResult<O>
+where
+    P: Fn(&'a str) -> ReadResult<O>,
+{
+    delimited(whitespace1, parser, whitespace1)
 }
 
 fn whitespace0(s: &str) -> ReadResult<&str> {
@@ -138,10 +146,12 @@ fn paragraph(s: &str) -> ReadResult<Paragraph> {
             many0(statement),
             paragraph_closing,
         )),
-        |(today, declaration, statements, closing)| Paragraph {
+        |(today, (declaration, type_), statements, closing)| Paragraph {
             name: declaration,
             closing_name: closing,
             mane: today.is_some(),
+            args: vec![],
+            return_type: type_,
             statements,
         },
     )(s)
@@ -151,9 +161,22 @@ fn keyword_declare_paragraph(s: &str) -> ReadResult<&str> {
     recognize(tuple((tag("I"), whitespace1, tag("learned"))))(s)
 }
 
-fn paragraph_declaration(s: &str) -> ReadResult<&str> {
+fn keyword_declare_paragraph_type(s: &str) -> ReadResult<&str> {
+    alt((
+        tag("with"),
+        recognize(tuple((tag("to"), whitespace1, tag("get")))),
+    ))(s)
+}
+
+fn paragraph_declaration(s: &str) -> ReadResult<(&str, Option<Type>)> {
     terminated(
-        preceded(preceded(keyword_declare_paragraph, whitespace0), identifier),
+        pair(
+            preceded(preceded(keyword_declare_paragraph, whitespace0), identifier),
+            opt(preceded(
+                whitespace_delim1(keyword_declare_paragraph_type),
+                declare_type,
+            )),
+        ),
         punctuation,
     )(s)
 }
@@ -169,6 +192,7 @@ fn statement(s: &str) -> ReadResult<Statement> {
             increment_statement,
             decrement_statement,
             call_statement,
+            return_statement,
         )),
         tuple((whitespace0, punctuation, whitespace0)),
     )(s)
@@ -456,6 +480,23 @@ fn call_statement(s: &str) -> ReadResult<Statement> {
     map(
         preceded(terminated(keyword_call, whitespace1), var),
         Statement::Call,
+    )(s)
+}
+
+fn keyword_return(s: &str) -> ReadResult<&str> {
+    recognize(tuple((
+        tag("Then"),
+        whitespace1,
+        tag("you"),
+        whitespace1,
+        tag("get"),
+    )))(s)
+}
+
+fn return_statement(s: &str) -> ReadResult<Statement> {
+    map(
+        preceded(terminated(keyword_return, whitespace1), expr),
+        Statement::Return,
     )(s)
 }
 
@@ -922,11 +963,11 @@ fn parses_report_closing() {
 fn parses_paragraph_declaration() {
     assert_eq!(
         paragraph_declaration("I learned how to fly."),
-        Ok(("", "how to fly"))
+        Ok(("", ("how to fly", None)))
     );
     assert_eq!(
-        paragraph_declaration("I learned to say hello world:"),
-        Ok(("", "to say hello world"))
+        paragraph_declaration("I learned to say hello world with a number:"),
+        Ok(("", ("to say hello world", Some(Number))))
     );
 }
 
@@ -956,6 +997,8 @@ fn parses_paragraph() {
                 name: "how to fly",
                 closing_name: "how to fly",
                 mane: true,
+                args: vec![],
+                return_type: None,
                 statements: vec![Statement::Print(Expr::Val(Value::Lit(Literal::Chars(
                     "Fly!"
                 ))))],
@@ -976,6 +1019,8 @@ fn parses_paragraph() {
                 name: "how to fly",
                 closing_name: "how to fly",
                 mane: false,
+                args: vec![],
+                return_type: None,
                 statements: vec![
                     Statement::Print(Expr::Val(Value::Lit(Literal::Chars("Fly1!")))),
                     Statement::Print(Expr::BinOp(
@@ -1011,6 +1056,8 @@ fn parses_report() {
                     name: "how to fly",
                     closing_name: "how to fly",
                     mane: true,
+                    args: vec![],
+                    return_type: None,
                     statements: vec![Statement::Print(Expr::Val(Value::Lit(Literal::Chars(
                         "Fly!"
                     ))))],
@@ -1479,5 +1526,16 @@ fn parses_call_statement() {
     assert_eq!(
         statement("I remembered how to fly."),
         Ok(("", Statement::Call(Variable("how to fly"))))
+    );
+}
+
+#[test]
+fn parses_return_statement() {
+    assert_eq!(
+        statement("Then you get a pie!"),
+        Ok((
+            "",
+            Statement::Return(Expr::Val(Value::Var(Variable("a pie"))))
+        ))
     );
 }

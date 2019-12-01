@@ -134,7 +134,7 @@ fn send<'a, B: Backend>(
 
     for paragraph in &report.paragraphs {
         let id = declare_paragraph(paragraph, sender)?;
-        globals.insert(paragraph.name, Callable::Func(Number, id));
+        globals.insert(paragraph.name, Callable::Func(paragraph.return_type, id));
         paragraphs.push((id, paragraph));
         if paragraph.mane {
             mane_paragraphs.push(id);
@@ -208,7 +208,10 @@ fn declare_paragraph<'a, B: Backend>(
     paragraph: &'a Paragraph,
     sender: &mut Sender<B>,
 ) -> Result<FuncId, ReportError> {
-    let sig = sender.module.make_signature();
+    let mut sig = sender.module.make_signature();
+    if let Some(type_) = paragraph.return_type {
+        sig.returns.push(AbiParam::new(ir_type(sender.pointer_type, type_)));
+    }
     let id = sender
         .module
         .declare_function(paragraph.name, Linkage::Local, &sig)?;
@@ -229,18 +232,21 @@ fn send_paragraph<'a, B: Backend>(
     let builder = FunctionBuilder::new(&mut context.func, &mut builder_context);
     let mut function_sender = FunctionSender::new(globals, builder);
 
+    if let Some(return_type) = paragraph.return_type {
+        function_sender.builder.func.signature.returns.push(AbiParam::new(ir_type(sender.pointer_type, return_type)));
+    }
+
     let entry_ebb = function_sender.builder.create_ebb();
-    //    function_sender
-    //        .builder
-    //        .append_ebb_params_for_function_params(entry_ebb);
     function_sender.builder.switch_to_block(entry_ebb);
     function_sender.builder.seal_block(entry_ebb);
 
     for statement in paragraph.statements.iter() {
-        send_statement(statement, sender, &mut function_sender)?;
+        send_statement(statement, paragraph.return_type, sender, &mut function_sender)?;
     }
 
-    function_sender.builder.ins().return_(&[]);
+    if paragraph.return_type.is_none() {
+        function_sender.builder.ins().return_(&[]);
+    }
 
     sender.module.define_function(func_id, context)?;
 
@@ -253,6 +259,7 @@ fn send_paragraph<'a, B: Backend>(
 
 fn send_statement<'a, B: Backend>(
     statement: &'a Statement<'a>,
+    return_type: Option<crate::types::Type>,
     sender: &mut Sender<B>,
     function_sender: &mut FunctionSender<'a, '_>,
 ) -> Result<(), ReportError> {
@@ -264,9 +271,10 @@ fn send_statement<'a, B: Backend>(
         Statement::Assign(var, expr) => send_assign_statement(var, expr, sender, function_sender),
         Statement::Increment(var) => send_increment_statement(var, function_sender),
         Statement::Decrement(var) => send_decrement_statement(var, function_sender),
-        Statement::If(cond, if_, else_) => send_if_else(cond, if_, else_, sender, function_sender),
-        Statement::While(cond, body) => send_while_statement(cond, body, sender, function_sender),
+        Statement::If(cond, if_, else_) => send_if_else(cond, if_, else_, return_type, sender, function_sender),
+        Statement::While(cond, body) => send_while_statement(cond, body, return_type, sender, function_sender),
         Statement::Call(var) => send_call(var, sender, function_sender),
+        Statement::Return(expr) => send_return(expr, return_type, sender, function_sender),
     }
 }
 
@@ -376,7 +384,7 @@ fn send_assign_statement<'a, B: Backend>(
 
     if *is_const {
         return Err(ReportError::TypeError(format!(
-            "Nopony can change what is always true: {}",
+            "Nopony can change what is always true: '{}'",
             var.0
         )));
     }
@@ -394,6 +402,7 @@ fn send_if_else<'a, B: Backend>(
     cond: &Expr<'a>,
     if_: &'a [Statement<'a>],
     else_: &'a [Statement<'a>],
+    return_type: Option<crate::types::Type>,
     sender: &mut Sender<B>,
     function_sender: &mut FunctionSender<'a, '_>,
 ) -> Result<(), ReportError> {
@@ -408,7 +417,7 @@ fn send_if_else<'a, B: Backend>(
         .brz(expr_value, else_block, &[]);
 
     for statement in if_ {
-        send_statement(statement, sender, function_sender)?;
+        send_statement(statement, return_type, sender, function_sender)?;
     }
 
     function_sender.builder.ins().jump(merge_block, &[]);
@@ -417,7 +426,7 @@ fn send_if_else<'a, B: Backend>(
     function_sender.builder.seal_block(else_block);
 
     for statement in else_ {
-        send_statement(statement, sender, function_sender)?;
+        send_statement(statement, return_type, sender, function_sender)?;
     }
 
     function_sender.builder.ins().jump(merge_block, &[]);
@@ -431,6 +440,7 @@ fn send_if_else<'a, B: Backend>(
 fn send_while_statement<'a, B: Backend>(
     cond: &Expr<'a>,
     body: &'a [Statement<'a>],
+    return_type: Option<crate::types::Type>,
     sender: &mut Sender<B>,
     function_sender: &mut FunctionSender<'a, '_>,
 ) -> Result<(), ReportError> {
@@ -448,7 +458,7 @@ fn send_while_statement<'a, B: Backend>(
         .brz(expr_value, exit_block, &[]);
 
     for statement in body {
-        send_statement(statement, sender, function_sender)?;
+        send_statement(statement, return_type, sender, function_sender)?;
     }
     function_sender.builder.ins().jump(header_block, &[]);
 
@@ -462,7 +472,7 @@ fn send_while_statement<'a, B: Backend>(
     Ok(())
 }
 
-fn send_call<'a, B: Backend>(
+fn send_call<B: Backend>(
     var: &pst::Variable,
     sender: &mut Sender<B>,
     function_sender: &mut FunctionSender,
@@ -470,7 +480,7 @@ fn send_call<'a, B: Backend>(
     let (type_, func_id) = match function_sender.vars.get(var.0)? {
         Callable::Var(_, _, _) => {
             return Err(ReportError::TypeError(format!(
-                "Sorry, you can't call a variable: {}",
+                "Sorry, you can't call a variable: '{}'",
                 var.0
             )))
         }
@@ -480,12 +490,28 @@ fn send_call<'a, B: Backend>(
     let local_callee = sender
         .module
         .declare_func_in_func(*func_id, &mut function_sender.builder.func);
-    let call = function_sender.builder.ins().call(local_callee, &[]);
+    let _call = function_sender.builder.ins().call(local_callee, &[]);
 
     Ok(())
 }
 
-fn send_increment_statement<'a>(
+fn send_return<B: Backend>(
+    expr: &Expr,
+    return_type: Option<crate::types::Type>,
+    sender: &mut Sender<B>,
+    function_sender: &mut FunctionSender,
+) -> Result<(), ReportError> {
+    let return_type = return_type.ok_or_else(|| ReportError::TypeError("You need to declare the type you are returning".to_string()))?;
+
+    let (expr_type, expr_value) = send_expression(expr, sender, function_sender)?;
+    return_type.check(expr_type)?;
+
+    function_sender.builder.ins().return_(&[expr_value]);
+
+    Ok(())
+}
+
+fn send_increment_statement(
     var: &pst::Variable,
     function_sender: &mut FunctionSender,
 ) -> Result<(), ReportError> {
@@ -495,7 +521,7 @@ fn send_increment_statement<'a>(
     })
 }
 
-fn send_decrement_statement<'a>(
+fn send_decrement_statement(
     var: &pst::Variable,
     function_sender: &mut FunctionSender,
 ) -> Result<(), ReportError> {
@@ -523,7 +549,7 @@ fn send_update_statement<'a, 'b>(
 
     if *is_const {
         return Err(ReportError::TypeError(format!(
-            "Nopony can change what is always true: {}",
+            "Nopony can change what is always true: '{}'",
             var.0
         )));
     }
@@ -775,12 +801,17 @@ fn send_value<'a, B: Backend>(
                 (*type_, v)
             }
             Callable::Func(type_, func_id) => {
-                let local_callee = sender
-                    .module
-                    .declare_func_in_func(*func_id, &mut function_sender.builder.func);
-                let call = function_sender.builder.ins().call(local_callee, &[]);
-                let result = function_sender.builder.inst_results(call)[0];
-                (*type_, result)
+                match type_ {
+                    None => return Err(ReportError::TypeError(format!("You need to get something from '{}'", var.0))),
+                    Some(t) => {
+                        let local_callee = sender
+                            .module
+                            .declare_func_in_func(*func_id, &mut function_sender.builder.func);
+                        let call = function_sender.builder.ins().call(local_callee, &[]);
+                        let v = function_sender.builder.inst_results(call)[0];
+                        (*t, v)
+                    },
+                }
             }
         },
     };
