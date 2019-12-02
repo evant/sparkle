@@ -14,17 +14,19 @@ use target_lexicon::Triple;
 
 use crate::error::ReportError;
 use crate::pst;
-use crate::pst::{BinOperator, Call, Expr, Literal, Paragraph, Report, Statement, Arg};
+use crate::pst::{Arg, BinOperator, Call, Expr, Literal, Paragraph, Report, Statement};
 use crate::types::Type::{Boolean, Chars, Number};
 use crate::vars::{Callable, Callables};
 use cranelift::codegen::ir::StackSlot;
 use std::collections::HashSet;
+use std::ffi::{CStr, CString};
+use std::os::raw::c_char;
 
 pub fn send_out<'a>(report: &'a Report, name: &str, target: &str) -> Result<(), ReportError> {
     let mut sender = faerie_sender(name, target)?;
     let mut globals = Callables::new();
     let mut context = sender.module.make_context();
-    send(report, &mut sender, &mut globals, &mut context, |_, _| {})?;
+    send(report, &mut sender, &mut globals, &mut context, |_, _| {Ok(())})?;
     sender.finalize(&mut context);
     let product = sender.module.finish();
     let file = File::create(name.to_owned() + ".o").expect("error opening file");
@@ -33,11 +35,11 @@ pub fn send_out<'a>(report: &'a Report, name: &str, target: &str) -> Result<(), 
     Ok(())
 }
 
-pub fn gallop<'a>(report: &'a Report, _name: &str) -> Result<(), ReportError> {
+pub fn gallop_mane(report: &Report) -> Result<(), ReportError> {
     let mut sender = simple_jit_sender();
     let mut globals = Callables::new();
     let mut context = sender.module.make_context();
-    let id = send(report, &mut sender, &mut globals, &mut context, |_, _| {})?;
+    let id = send(report, &mut sender, &mut globals, &mut context, |_, _| {Ok(())})?;
     sender.finalize(&mut context);
     let code = sender.module.get_finalized_function(id);
     let code = unsafe { mem::transmute::<_, fn() -> (isize)>(code) };
@@ -47,24 +49,70 @@ pub fn gallop<'a>(report: &'a Report, _name: &str) -> Result<(), ReportError> {
     Ok(())
 }
 
-pub fn gallop_paragraph<R>(paragraph: &Paragraph) -> Result<R, ReportError> {
-    let mut sender = simple_jit_sender();
-    let mut globals = Callables::new();
-    let mut context = sender.module.make_context();
-    let id = declare_paragraph(paragraph, &mut sender)?;
-    send_paragraph(
-        paragraph,
-        id,
-        &mut sender,
-        &mut globals,
-        &mut context,
-        &mut |_, _| {},
-    )?;
-    sender.finalize(&mut context);
-    let code = sender.module.get_finalized_function(id);
-    let code = unsafe { mem::transmute::<_, fn() -> R>(code) };
 
-    Ok(code())
+
+pub unsafe trait IntoSparkleType: Sized {
+    type T;
+
+    fn into(self) -> Self::T;
+}
+
+pub unsafe trait FromSparkleType: Sized {
+    type T;
+
+    fn from<T>(other: Self::T) -> Self;
+}
+
+unsafe impl IntoSparkleType for f64 {
+    type T = f64;
+
+    fn into(self) -> Self::T {
+        self
+    }
+}
+
+unsafe impl FromSparkleType for f64 {
+    type T = f64;
+
+    fn from<T>(other: Self::T) -> Self {
+        other
+    }
+}
+
+unsafe impl IntoSparkleType for bool {
+    type T = i32;
+
+    fn into(self) -> Self::T {
+        if self {
+            1
+        } else {
+            0
+        }
+    }
+}
+
+unsafe impl FromSparkleType for bool {
+    type T = i32;
+
+    fn from<T>(other: Self::T) -> Self {
+        other != 0
+    }
+}
+
+unsafe impl IntoSparkleType for &str {
+    type T = *const c_char;
+
+    fn into(self) -> Self::T {
+        CString::new(self).unwrap().into_raw()
+    }
+}
+
+unsafe impl FromSparkleType for String {
+    type T = *const c_char;
+
+    fn from<T>(other: Self::T) -> Self {
+        unsafe { CStr::from_ptr(other).to_str().unwrap().to_owned() }
+    }
 }
 
 pub fn proofread<'a>(report: &'a Report<'a>) -> Result<(), ReportError> {
@@ -83,7 +131,8 @@ pub fn proofread<'a>(report: &'a Report<'a>) -> Result<(), ReportError> {
                 &mut buff,
                 &context.func,
                 &Some(sender.module.isa()).into(),
-            );
+            )?;
+            Ok(())
         },
     )?;
 
@@ -121,42 +170,64 @@ fn send<'a, B: Backend>(
     sender: &'a mut Sender<B>,
     globals: &'a mut Callables<'a>,
     context: &mut Context,
-    mut f: impl FnMut(&Sender<B>, &Context) -> (),
+    mut f: impl FnMut(&Sender<B>, &Context) -> Result<(), ReportError>,
 ) -> Result<FuncId, ReportError> {
+    send_globals(report, sender, globals)?;
+    let mane_paragraphs = send_paragraphs(&report.paragraphs, sender, globals, context, &mut f)?;
+    let id = send_mane(&mane_paragraphs, sender, context, &mut f)?;
+
+    Ok(id)
+}
+
+fn send_globals<'a, B: Backend>(
+    _report: &Report,
+    sender: &mut Sender<B>,
+    _globals: &mut Callables,
+) -> Result<(), ReportError> {
     // constant strings for printing booleans
     create_constant_string("yes", sender)?;
     create_constant_string("no", sender)?;
     // constant string for formatting numbers
     create_constant_string("%g", sender)?;
 
-    let mut mane_paragraphs: Vec<FuncId> = vec![];
-    let mut paragraphs: Vec<(FuncId, &Paragraph)> = vec![];
+    Ok(())
+}
 
-    for paragraph in &report.paragraphs {
+fn send_paragraphs<'a, B: Backend>(
+    paragraphs: &[Paragraph<'a>],
+    sender: &mut Sender<B>,
+    globals: &mut Callables<'a>,
+    context: &mut Context,
+    mut f: impl FnMut(&Sender<B>, &Context) -> Result<(), ReportError>,
+) -> Result<Vec<FuncId>, ReportError> {
+    let mut mane_paragraphs: Vec<FuncId> = vec![];
+    let mut declared_paragraphs: Vec<(FuncId, &Paragraph)> = vec![];
+
+    for paragraph in paragraphs {
         let id = declare_paragraph(paragraph, sender)?;
         let arg_types = paragraph.args.iter().map(|Arg(type_, _)| *type_).collect();
-        globals.insert(paragraph.name, Callable::Func(paragraph.return_type, arg_types, id));
-        paragraphs.push((id, paragraph));
+        globals.insert(
+            paragraph.name,
+            Callable::Func(paragraph.return_type, arg_types, id),
+        );
+        declared_paragraphs.push((id, paragraph));
         if paragraph.mane {
             mane_paragraphs.push(id);
         }
     }
 
-    for (id, paragraph) in paragraphs {
+    for (id, paragraph) in declared_paragraphs {
         send_paragraph(paragraph, id, sender, globals, context, &mut f)?;
     }
 
-    let id = send_mane(mane_paragraphs, sender, globals, context, &mut f)?;
-
-    Ok(id)
+    Ok(mane_paragraphs)
 }
 
 fn send_mane<'a, B: Backend>(
-    mane_paragraphs: Vec<FuncId>,
-    sender: &'a mut Sender<B>,
-    globals: &'a Callables<'a>,
+    mane_paragraphs: &[FuncId],
+    sender: &mut Sender<B>,
     context: &mut Context,
-    f: &mut impl FnMut(&Sender<B>, &Context) -> (),
+    f: &mut impl FnMut(&Sender<B>, &Context) -> Result<(), ReportError>,
 ) -> Result<FuncId, ReportError> {
     let mut builder_context = FunctionBuilderContext::new();
     let int = sender.pointer_type;
@@ -179,7 +250,7 @@ fn send_mane<'a, B: Backend>(
     for func_id in mane_paragraphs {
         let local_callee = sender
             .module
-            .declare_func_in_func(func_id, function_sender.builder.func);
+            .declare_func_in_func(*func_id, function_sender.builder.func);
         function_sender.builder.ins().call(local_callee, &[]);
     }
 
@@ -198,7 +269,7 @@ fn send_mane<'a, B: Backend>(
 
     sender.module.define_function(id, context)?;
 
-    f(sender, context);
+    f(sender, context)?;
 
     sender.module.clear_context(context);
 
@@ -211,7 +282,8 @@ fn declare_paragraph<'a, B: Backend>(
 ) -> Result<FuncId, ReportError> {
     let mut sig = sender.module.make_signature();
     for Arg(type_, _) in &paragraph.args {
-        sig.params.push(AbiParam::new(ir_type(sender.pointer_type, *type_)));
+        sig.params
+            .push(AbiParam::new(ir_type(sender.pointer_type, *type_)));
     }
     if let Some(type_) = paragraph.return_type {
         sig.returns
@@ -230,7 +302,7 @@ fn send_paragraph<'a, B: Backend>(
     sender: &mut Sender<B>,
     globals: &'a Callables<'a>,
     context: &mut Context,
-    f: &mut impl FnMut(&Sender<B>, &Context) -> (),
+    f: &mut impl FnMut(&Sender<B>, &Context) -> Result<(), ReportError>,
 ) -> Result<(), ReportError> {
     let mut builder_context = FunctionBuilderContext::new();
 
@@ -242,8 +314,15 @@ fn send_paragraph<'a, B: Backend>(
 
     for Arg(arg_type, name) in &paragraph.args {
         let value_type = ir_type(sender.pointer_type, *arg_type);
-        function_sender.builder.func.signature.params.push(AbiParam::new(value_type));
-        let arg_value = function_sender.builder.append_ebb_param(entry_ebb, value_type);
+        function_sender
+            .builder
+            .func
+            .signature
+            .params
+            .push(AbiParam::new(value_type));
+        let arg_value = function_sender
+            .builder
+            .append_ebb_param(entry_ebb, value_type);
         vars.insert(*name, Callable::Arg(*arg_type, arg_value));
     }
     if let Some(return_type) = paragraph.return_type {
@@ -274,7 +353,7 @@ fn send_paragraph<'a, B: Backend>(
 
     sender.module.define_function(func_id, context)?;
 
-    f(sender, context);
+    f(sender, context)?;
 
     sender.module.clear_context(context);
 
@@ -293,7 +372,9 @@ fn send_statement<'a, B: Backend>(
         Statement::Declare(var, type_, expr, is_const) => {
             send_declare_statement(var, *type_, expr, *is_const, sender, vars, function_sender)
         }
-        Statement::Assign(var, expr) => send_assign_statement(var, expr, sender, vars, function_sender),
+        Statement::Assign(var, expr) => {
+            send_assign_statement(var, expr, sender, vars, function_sender)
+        }
         Statement::Increment(var) => send_increment_statement(var, vars, function_sender),
         Statement::Decrement(var) => send_decrement_statement(var, vars, function_sender),
         Statement::If(cond, if_, else_) => {
@@ -407,7 +488,10 @@ fn send_assign_statement<'a, B: Backend>(
     let (expr_type, expr_value) = send_expression(expr, sender, vars, function_sender)?;
     let (type_, slot, is_const) = match vars.get(var.0)? {
         Callable::Arg(_, _) => {
-            return Err(ReportError::TypeError(format!("Sorry, you can't assign to an argument '{}", var.0)));
+            return Err(ReportError::TypeError(format!(
+                "Sorry, you can't assign to an argument '{}",
+                var.0
+            )));
         }
         Callable::Var(type_, slot, is_const) => (type_, slot, is_const),
         Callable::Func(_, _, _) => {
@@ -537,7 +621,7 @@ fn send_call<B: Backend>(
                     name
                 )))
             }
-        },
+        }
         Callable::Func(type_, arg_types, func_id) => {
             let mut arg_values = vec![];
             for (arg, arg_type) in args.iter().zip(arg_types) {
@@ -549,7 +633,10 @@ fn send_call<B: Backend>(
             let local_callee = sender
                 .module
                 .declare_func_in_func(*func_id, &mut function_sender.builder.func);
-            let result = function_sender.builder.ins().call(local_callee, &arg_values);
+            let result = function_sender
+                .builder
+                .ins()
+                .call(local_callee, &arg_values);
 
             match type_ {
                 None => Ok(None),
@@ -558,7 +645,7 @@ fn send_call<B: Backend>(
                     Ok(Some((*t, v)))
                 }
             }
-        },
+        }
     }
 }
 
@@ -1093,9 +1180,7 @@ struct FunctionSender<'b> {
 
 impl<'b> FunctionSender<'b> {
     fn new(builder: FunctionBuilder<'b>) -> FunctionSender<'b> {
-        FunctionSender {
-            builder,
-        }
+        FunctionSender { builder }
     }
 }
 
@@ -1107,4 +1192,133 @@ fn ir_type(pointer_type: Type, type_: crate::types::Type) -> Type {
         // https://github.com/bytecodealliance/cranelift/issues/1117
         Boolean => types::I32,
     }
+}
+
+#[cfg(test)]
+unsafe fn gallop_first0<R: FromSparkleType>(
+    report: &Report,
+) -> Result<impl Fn() -> R, ReportError> {
+    let code = gallop_first(report)?;
+    let code = mem::transmute::<_, fn() -> R::T>(code);
+    Ok(move || R::from::<R::T>(code()))
+}
+
+#[cfg(test)]
+unsafe fn gallop_first1<A: IntoSparkleType, R: FromSparkleType>(
+    report: &Report,
+) -> Result<impl Fn(A) -> R, ReportError> {
+    let code = gallop_first(report)?;
+    let code = mem::transmute::<_, fn(A::T) -> R::T>(code);
+    Ok(move |a: A| R::from::<R::T>(code(a.into())))
+}
+
+#[cfg(test)]
+unsafe fn gallop_first2<A1: IntoSparkleType, A2: IntoSparkleType, R: FromSparkleType>(
+    report: &Report,
+) -> Result<impl Fn(A1, A2) -> R, ReportError> {
+    let code = gallop_first(report)?;
+    let code = mem::transmute::<_, fn(A1::T, A2::T) -> R::T>(code);
+    Ok(move |a1: A1, a2: A2| R::from::<R::T>(code(a1.into(), a2.into())))
+}
+
+#[cfg(test)]
+fn gallop_first(report: &Report) -> Result<*const u8, ReportError> {
+    let mut sender = simple_jit_sender();
+    let mut globals = Callables::new();
+    let mut context = sender.module.make_context();
+
+    send_globals(report, &mut sender, &mut globals)?;
+    let mane_paragraphs = send_paragraphs(
+        &report.paragraphs,
+        &mut sender,
+        &mut globals,
+        &mut context,
+        |_, _| { Ok(()) },
+    )?;
+
+    let id = mane_paragraphs[0];
+    sender.finalize(&mut context);
+
+    Ok(sender.module.get_finalized_function(id))
+}
+
+#[test]
+fn ands_two_booleans() -> Result<(), ReportError> {
+    let result = unsafe {
+        gallop_first2::<bool, bool, bool>(&Report {
+            name: "test report",
+            paragraphs: vec![Paragraph {
+                name: "test",
+                closing_name: "test",
+                mane: true,
+                args: vec![Arg(Boolean, "one"), Arg(Boolean, "two")],
+                return_type: Some(Boolean),
+                statements: vec![Statement::Return(Expr::BinOp(
+                    BinOperator::AddOrAnd,
+                    Box::new(Expr::Call(Call("one", vec![]))),
+                    Box::new(Expr::Call(Call("two", vec![]))),
+                ))],
+            }],
+            writer: "",
+        })?
+    };
+
+    assert_eq!(result(true, true), true);
+    assert_eq!(result(true, false), false);
+    assert_eq!(result(false, true), false);
+    assert_eq!(result(false, false), false);
+
+    Ok(())
+}
+
+#[test]
+fn adds_two_numbers() -> Result<(), ReportError> {
+    let result = unsafe {
+        gallop_first2::<f64, f64, f64>(&Report {
+            name: "test report",
+            paragraphs: vec![Paragraph {
+                name: "test",
+                closing_name: "test",
+                mane: true,
+                args: vec![Arg(Number, "one"), Arg(Number, "two")],
+                return_type: Some(Number),
+                statements: vec![Statement::Return(Expr::BinOp(
+                    BinOperator::AddOrAnd,
+                    Box::new(Expr::Call(Call("one", vec![]))),
+                    Box::new(Expr::Call(Call("two", vec![]))),
+                ))],
+            }],
+            writer: "",
+        })?
+    };
+
+    assert_eq!(result(1f64, 2f64), 3f64);
+    assert_eq!(result(4f64, 5f64), 9f64);
+
+    Ok(())
+}
+
+#[test]
+fn concatenates_two_constant_strings() -> Result<(), ReportError> {
+    let result = unsafe {
+        gallop_first2::<&str, &str, String>(&Report {
+            name: "report name",
+            paragraphs: vec![Paragraph {
+                name: "test",
+                closing_name: "test",
+                mane: true,
+                args: vec![Arg(Chars, "one"), Arg(Chars, "two")],
+                return_type: Some(Chars),
+                statements: vec![Statement::Return(Expr::Concat(vec![
+                    Expr::Call(Call("one", vec![])),
+                    Expr::Call(Call("two", vec![])),
+                ]))],
+            }],
+            writer: ""
+        })?
+    };
+
+    assert_eq!(result("one", "two"), "onetwo");
+
+    Ok(())
 }
