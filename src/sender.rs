@@ -863,21 +863,7 @@ fn send_expression<'a, B: Backend>(
             (type_, function_sender.builder.ins().bint(types::I32, b))
         }
         Expr::Concat(exprs) => {
-            //TODO: figure out how to allocate the buffer to the correct size.
-            let slot = function_sender
-                .builder
-                .create_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, 1024));
-            let buff = function_sender
-                .builder
-                .ins()
-                .stack_addr(sender.pointer_type, slot, 0);
-
-            // Write 0 so that strcat starts at the beginning of the buffer.
-            let zero = function_sender.builder.ins().iconst(types::I32, 0);
-            function_sender.builder.ins().stack_store(zero, slot, 0);
-
-            let buff_size = function_sender.builder.ins().iconst(types::I64, 1024);
-
+            let mut strings = vec![];
             for expr in exprs {
                 let (expr_type, expr_value) = send_expression(expr, sender, vars, function_sender)?;
                 let str_value = match expr_type {
@@ -905,10 +891,22 @@ fn send_expression<'a, B: Backend>(
                     Boolean => bool_to_string(expr_value, sender, &mut function_sender.builder)?,
                 };
 
+                strings.push(str_value);
+            }
+
+            let mut buff_size = function_sender.builder.ins().iconst(sender.pointer_type, 0);
+            for string in &strings {
+                let len = strlen(*string, sender, &mut function_sender.builder)?;
+                buff_size = function_sender.builder.ins().iadd(buff_size, len);
+            }
+
+            let buff = alloc(buff_size, sender, &mut function_sender.builder)?;
+
+            for string in &strings {
                 concat_strings(
                     buff,
                     buff_size,
-                    str_value,
+                    *string,
                     sender,
                     &mut function_sender.builder,
                 )?;
@@ -1151,6 +1149,44 @@ fn concat_strings<B: Backend>(
     Ok(builder.inst_results(call)[0])
 }
 
+fn alloc<B: Backend>(
+    size: Value,
+    sender: &mut Sender<B>,
+    builder: &mut FunctionBuilder,
+) -> Result<Value, ReportError> {
+    let mut sig = sender.module.make_signature();
+    sig.params.push(AbiParam::new(sender.pointer_type));
+    sig.returns.push(AbiParam::new(sender.pointer_type));
+
+    let callee = sender
+        .module
+        .declare_function("calloc", Linkage::Import, &sig)?;
+    let local_callee = sender.module.declare_func_in_func(callee, builder.func);
+
+    let call = builder.ins().call(local_callee, &[size]);
+
+    Ok(builder.inst_results(call)[0])
+}
+
+fn strlen<B: Backend>(
+    string: Value,
+    sender: &mut Sender<B>,
+    builder: &mut FunctionBuilder,
+) -> Result<Value, ReportError> {
+    let mut sig = sender.module.make_signature();
+    sig.params.push(AbiParam::new(sender.pointer_type));
+    sig.returns.push(AbiParam::new(sender.pointer_type));
+
+    let callee = sender
+        .module
+        .declare_function("strlen", Linkage::Import, &sig)?;
+    let local_callee = sender.module.declare_func_in_func(callee, builder.func);
+
+    let call = builder.ins().call(local_callee, &[string]);
+
+    Ok(builder.inst_results(call)[0])
+}
+
 struct Sender<B: Backend> {
     module: Module<B>,
     data_context: DataContext,
@@ -1336,7 +1372,10 @@ fn returns_allocated_string_from_paragraph() -> ReportResult<()> {
                     return_type: Some(Chars),
                     statements: vec![Statement::Return(Expr::Call(Call(
                         "louder",
-                        vec![Expr::Call(Call("cheer", vec![]))],
+                        vec![Expr::Call(Call(
+                            "louder",
+                            vec![Expr::Call(Call("cheer", vec![]))],
+                        ))],
                     )))],
                 },
                 Paragraph {
@@ -1355,7 +1394,7 @@ fn returns_allocated_string_from_paragraph() -> ReportResult<()> {
         })?
     };
 
-    assert_eq!(result("yay"), "yay!");
+    assert_eq!(result("yay"), "yay!!");
 
     Ok(())
 }
