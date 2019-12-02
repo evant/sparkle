@@ -22,11 +22,15 @@ use std::collections::HashSet;
 use std::ffi::{CStr, CString};
 use std::os::raw::c_char;
 
-pub fn send_out<'a>(report: &'a Report, name: &str, target: &str) -> Result<(), ReportError> {
+type ReportResult<T> = Result<T, ReportError>;
+
+pub fn send_out<'a>(report: &'a Report, name: &str, target: &str) -> ReportResult<()> {
     let mut sender = faerie_sender(name, target)?;
     let mut globals = Callables::new();
     let mut context = sender.module.make_context();
-    send(report, &mut sender, &mut globals, &mut context, |_, _| {Ok(())})?;
+    send(report, &mut sender, &mut globals, &mut context, |_, _| {
+        Ok(())
+    })?;
     sender.finalize(&mut context);
     let product = sender.module.finish();
     let file = File::create(name.to_owned() + ".o").expect("error opening file");
@@ -35,11 +39,13 @@ pub fn send_out<'a>(report: &'a Report, name: &str, target: &str) -> Result<(), 
     Ok(())
 }
 
-pub fn gallop_mane(report: &Report) -> Result<(), ReportError> {
+pub fn gallop_mane(report: &Report) -> ReportResult<()> {
     let mut sender = simple_jit_sender();
     let mut globals = Callables::new();
     let mut context = sender.module.make_context();
-    let id = send(report, &mut sender, &mut globals, &mut context, |_, _| {Ok(())})?;
+    let id = send(report, &mut sender, &mut globals, &mut context, |_, _| {
+        Ok(())
+    })?;
     sender.finalize(&mut context);
     let code = sender.module.get_finalized_function(id);
     let code = unsafe { mem::transmute::<_, fn() -> (isize)>(code) };
@@ -48,8 +54,6 @@ pub fn gallop_mane(report: &Report) -> Result<(), ReportError> {
 
     Ok(())
 }
-
-
 
 pub unsafe trait IntoSparkleType: Sized {
     type T;
@@ -115,7 +119,7 @@ unsafe impl FromSparkleType for String {
     }
 }
 
-pub fn proofread<'a>(report: &'a Report<'a>) -> Result<(), ReportError> {
+pub fn proofread<'a>(report: &'a Report<'a>) -> ReportResult<()> {
     let mut sender = simple_jit_sender();
     let mut globals = Callables::new();
     let mut context = sender.module.make_context();
@@ -141,7 +145,7 @@ pub fn proofread<'a>(report: &'a Report<'a>) -> Result<(), ReportError> {
     Ok(())
 }
 
-fn faerie_sender(name: &str, target: &str) -> Result<Sender<FaerieBackend>, ReportError> {
+fn faerie_sender(name: &str, target: &str) -> ReportResult<Sender<FaerieBackend>> {
     let mut flag_builder = settings::builder();
     flag_builder.enable("is_pic").unwrap();
     let isa_builder = isa::lookup(Triple::from_str(target)?)?;
@@ -170,8 +174,8 @@ fn send<'a, B: Backend>(
     sender: &'a mut Sender<B>,
     globals: &'a mut Callables<'a>,
     context: &mut Context,
-    mut f: impl FnMut(&Sender<B>, &Context) -> Result<(), ReportError>,
-) -> Result<FuncId, ReportError> {
+    mut f: impl FnMut(&Sender<B>, &Context) -> ReportResult<()>,
+) -> ReportResult<FuncId> {
     send_globals(report, sender, globals)?;
     let mane_paragraphs = send_paragraphs(&report.paragraphs, sender, globals, context, &mut f)?;
     let id = send_mane(&mane_paragraphs, sender, context, &mut f)?;
@@ -183,7 +187,7 @@ fn send_globals<'a, B: Backend>(
     _report: &Report,
     sender: &mut Sender<B>,
     _globals: &mut Callables,
-) -> Result<(), ReportError> {
+) -> ReportResult<()> {
     // constant strings for printing booleans
     create_constant_string("yes", sender)?;
     create_constant_string("no", sender)?;
@@ -198,8 +202,8 @@ fn send_paragraphs<'a, B: Backend>(
     sender: &mut Sender<B>,
     globals: &mut Callables<'a>,
     context: &mut Context,
-    mut f: impl FnMut(&Sender<B>, &Context) -> Result<(), ReportError>,
-) -> Result<Vec<FuncId>, ReportError> {
+    mut f: impl FnMut(&Sender<B>, &Context) -> ReportResult<()>,
+) -> ReportResult<Vec<FuncId>> {
     let mut mane_paragraphs: Vec<FuncId> = vec![];
     let mut declared_paragraphs: Vec<(FuncId, &Paragraph)> = vec![];
 
@@ -227,8 +231,8 @@ fn send_mane<'a, B: Backend>(
     mane_paragraphs: &[FuncId],
     sender: &mut Sender<B>,
     context: &mut Context,
-    f: &mut impl FnMut(&Sender<B>, &Context) -> Result<(), ReportError>,
-) -> Result<FuncId, ReportError> {
+    f: &mut impl FnMut(&Sender<B>, &Context) -> ReportResult<()>,
+) -> ReportResult<FuncId> {
     let mut builder_context = FunctionBuilderContext::new();
     let int = sender.pointer_type;
     context
@@ -279,7 +283,7 @@ fn send_mane<'a, B: Backend>(
 fn declare_paragraph<'a, B: Backend>(
     paragraph: &'a Paragraph,
     sender: &mut Sender<B>,
-) -> Result<FuncId, ReportError> {
+) -> ReportResult<FuncId> {
     let mut sig = sender.module.make_signature();
     for Arg(type_, _) in &paragraph.args {
         sig.params
@@ -302,8 +306,8 @@ fn send_paragraph<'a, B: Backend>(
     sender: &mut Sender<B>,
     globals: &'a Callables<'a>,
     context: &mut Context,
-    f: &mut impl FnMut(&Sender<B>, &Context) -> Result<(), ReportError>,
-) -> Result<(), ReportError> {
+    f: &mut impl FnMut(&Sender<B>, &Context) -> ReportResult<()>,
+) -> ReportResult<()> {
     let mut builder_context = FunctionBuilderContext::new();
 
     let builder = FunctionBuilder::new(&mut context.func, &mut builder_context);
@@ -366,7 +370,7 @@ fn send_statement<'a, B: Backend>(
     sender: &mut Sender<B>,
     vars: &mut Callables<'a>,
     function_sender: &mut FunctionSender,
-) -> Result<(), ReportError> {
+) -> ReportResult<()> {
     match statement {
         Statement::Print(expr) => send_print_statement(expr, sender, vars, function_sender),
         Statement::Declare(var, type_, expr, is_const) => {
@@ -396,7 +400,7 @@ fn send_print_statement<'a, B: Backend>(
     sender: &mut Sender<B>,
     vars: &Callables,
     function_sender: &mut FunctionSender,
-) -> Result<(), ReportError> {
+) -> ReportResult<()> {
     let (type_, value) = send_expression(expr, sender, vars, function_sender)?;
 
     let value = match type_ {
@@ -439,7 +443,7 @@ fn send_declare_statement<'a, 'b, B: Backend>(
     sender: &mut Sender<B>,
     vars: &mut Callables<'a>,
     function_sender: &mut FunctionSender,
-) -> Result<(), ReportError> {
+) -> ReportResult<()> {
     let (type_, value) = match (type_, expr) {
         (Some(type_), Some(expr)) => {
             let (expr_type, value) = send_expression(expr, sender, vars, function_sender)?;
@@ -484,7 +488,7 @@ fn send_assign_statement<'a, B: Backend>(
     sender: &mut Sender<B>,
     vars: &Callables,
     function_sender: &mut FunctionSender,
-) -> Result<(), ReportError> {
+) -> ReportResult<()> {
     let (expr_type, expr_value) = send_expression(expr, sender, vars, function_sender)?;
     let (type_, slot, is_const) = match vars.get(var.0)? {
         Callable::Arg(_, _) => {
@@ -526,7 +530,7 @@ fn send_if_else<'a, B: Backend>(
     sender: &mut Sender<B>,
     vars: &mut Callables<'a>,
     function_sender: &mut FunctionSender,
-) -> Result<(), ReportError> {
+) -> ReportResult<()> {
     let (expr_type, expr_value) = send_expression(cond, sender, vars, function_sender)?;
     Boolean.check(expr_type)?;
 
@@ -565,7 +569,7 @@ fn send_while_statement<'a, B: Backend>(
     sender: &mut Sender<B>,
     vars: &mut Callables<'a>,
     function_sender: &mut FunctionSender,
-) -> Result<(), ReportError> {
+) -> ReportResult<()> {
     let header_block = function_sender.builder.create_ebb();
     let exit_block = function_sender.builder.create_ebb();
     function_sender.builder.ins().jump(header_block, &[]);
@@ -599,7 +603,7 @@ fn send_call<B: Backend>(
     sender: &mut Sender<B>,
     vars: &Callables,
     function_sender: &mut FunctionSender,
-) -> Result<Option<(crate::types::Type, Value)>, ReportError> {
+) -> ReportResult<Option<(crate::types::Type, Value)>> {
     let Call(name, args) = call;
     match vars.get(name)? {
         Callable::Arg(type_, value) => {
@@ -655,7 +659,7 @@ fn send_return<B: Backend>(
     sender: &mut Sender<B>,
     vars: &Callables,
     function_sender: &mut FunctionSender,
-) -> Result<(), ReportError> {
+) -> ReportResult<()> {
     let return_type = return_type.ok_or_else(|| {
         ReportError::TypeError("You need to declare the type you are returning".to_string())
     })?;
@@ -672,7 +676,7 @@ fn send_increment_statement(
     var: &pst::Variable,
     vars: &Callables,
     function_sender: &mut FunctionSender,
-) -> Result<(), ReportError> {
+) -> ReportResult<()> {
     send_update_statement(var, vars, function_sender, |builder, value| {
         let one = builder.ins().f64const(1f64);
         builder.ins().fadd(value, one)
@@ -683,7 +687,7 @@ fn send_decrement_statement(
     var: &pst::Variable,
     vars: &Callables,
     function_sender: &mut FunctionSender,
-) -> Result<(), ReportError> {
+) -> ReportResult<()> {
     send_update_statement(var, vars, function_sender, |builder, value| {
         let one = builder.ins().f64const(1f64);
         builder.ins().fsub(value, one)
@@ -695,7 +699,7 @@ fn send_update_statement<'a, 'b>(
     vars: &Callables,
     function_sender: &mut FunctionSender<'b>,
     f: impl FnOnce(&mut FunctionBuilder<'b>, Value) -> Value,
-) -> Result<(), ReportError> {
+) -> ReportResult<()> {
     let (type_, slot, is_const) = match vars.get(var.0)? {
         Callable::Arg(_, _) => {
             return Err(ReportError::TypeError(format!(
@@ -739,7 +743,7 @@ fn send_expression<'a, B: Backend>(
     sender: &mut Sender<B>,
     vars: &Callables,
     function_sender: &mut FunctionSender,
-) -> Result<(crate::types::Type, Value), ReportError> {
+) -> ReportResult<(crate::types::Type, Value)> {
     let result = match expr {
         Expr::BinOp(op, left, right) => {
             let (left_type, left_value) = send_expression(left, sender, vars, function_sender)?;
@@ -862,7 +866,7 @@ fn send_expression<'a, B: Backend>(
             //TODO: figure out how to allocate the buffer to the correct size.
             let slot = function_sender
                 .builder
-                .create_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, 255));
+                .create_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, 1024));
             let buff = function_sender
                 .builder
                 .ins()
@@ -872,7 +876,7 @@ fn send_expression<'a, B: Backend>(
             let zero = function_sender.builder.ins().iconst(types::I32, 0);
             function_sender.builder.ins().stack_store(zero, slot, 0);
 
-            let buff_size = function_sender.builder.ins().iconst(types::I64, 255);
+            let buff_size = function_sender.builder.ins().iconst(types::I64, 1024);
 
             for expr in exprs {
                 let (expr_type, expr_value) = send_expression(expr, sender, vars, function_sender)?;
@@ -932,7 +936,7 @@ fn send_comparison<B: Backend>(
     right_value: Value,
     sender: &mut Sender<B>,
     function_sender: &mut FunctionSender,
-) -> Result<(crate::types::Type, Value), ReportError> {
+) -> ReportResult<(crate::types::Type, Value)> {
     Ok((
         Boolean,
         match type_ {
@@ -974,7 +978,7 @@ fn send_literal<'a, B: Backend>(
     lit: &Literal<'a>,
     sender: &mut Sender<B>,
     function_sender: &mut FunctionSender,
-) -> Result<(crate::types::Type, Value), ReportError> {
+) -> ReportResult<(crate::types::Type, Value)> {
     let result = match lit {
         Literal::Chars(string) => {
             create_constant_string(string, sender)?;
@@ -1012,10 +1016,7 @@ fn send_boolean_literal(
     )
 }
 
-fn create_constant_string<B: Backend>(
-    string: &str,
-    sender: &mut Sender<B>,
-) -> Result<(), ReportError> {
+fn create_constant_string<B: Backend>(string: &str, sender: &mut Sender<B>) -> ReportResult<()> {
     if sender.constants.contains(string) {
         return Ok(());
     }
@@ -1042,7 +1043,7 @@ fn compare_strings<B: Backend>(
     right_value: Value,
     sender: &mut Sender<B>,
     builder: &mut FunctionBuilder,
-) -> Result<Value, ReportError> {
+) -> ReportResult<Value> {
     let mut sig = sender.module.make_signature();
     sig.params.push(AbiParam::new(sender.pointer_type));
     sig.params.push(AbiParam::new(sender.pointer_type));
@@ -1066,7 +1067,7 @@ fn float_to_string<B: Backend>(
     buffer_size: Value,
     sender: &mut Sender<B>,
     builder: &mut FunctionBuilder,
-) -> Result<Value, ReportError> {
+) -> ReportResult<Value> {
     let mut sig = sender.module.make_signature();
     sig.params.push(AbiParam::new(sender.pointer_type));
     sig.params.push(AbiParam::new(types::I64));
@@ -1092,7 +1093,7 @@ fn bool_to_string<B: Backend>(
     bool_value: Value,
     sender: &mut Sender<B>,
     builder: &mut FunctionBuilder,
-) -> Result<Value, ReportError> {
+) -> ReportResult<Value> {
     let else_block = builder.create_ebb();
     let merge_block = builder.create_ebb();
     builder.append_ebb_param(merge_block, sender.pointer_type);
@@ -1116,7 +1117,7 @@ fn reference_constant_string<B: Backend>(
     string: &str,
     sender: &mut Sender<B>,
     builder: &mut FunctionBuilder,
-) -> Result<Value, ReportError> {
+) -> ReportResult<Value> {
     let sym = sender
         .module
         .declare_data(string, Linkage::Export, false, Option::None)?;
@@ -1133,7 +1134,7 @@ fn concat_strings<B: Backend>(
     source: Value,
     sender: &mut Sender<B>,
     builder: &mut FunctionBuilder,
-) -> Result<Value, ReportError> {
+) -> ReportResult<Value> {
     let mut sig = sender.module.make_signature();
     sig.params.push(AbiParam::new(sender.pointer_type));
     sig.params.push(AbiParam::new(sender.pointer_type));
@@ -1195,9 +1196,7 @@ fn ir_type(pointer_type: Type, type_: crate::types::Type) -> Type {
 }
 
 #[cfg(test)]
-unsafe fn gallop_first0<R: FromSparkleType>(
-    report: &Report,
-) -> Result<impl Fn() -> R, ReportError> {
+unsafe fn gallop_first0<R: FromSparkleType>(report: &Report) -> ReportResult<impl Fn() -> R> {
     let code = gallop_first(report)?;
     let code = mem::transmute::<_, fn() -> R::T>(code);
     Ok(move || R::from::<R::T>(code()))
@@ -1206,7 +1205,7 @@ unsafe fn gallop_first0<R: FromSparkleType>(
 #[cfg(test)]
 unsafe fn gallop_first1<A: IntoSparkleType, R: FromSparkleType>(
     report: &Report,
-) -> Result<impl Fn(A) -> R, ReportError> {
+) -> ReportResult<impl Fn(A) -> R> {
     let code = gallop_first(report)?;
     let code = mem::transmute::<_, fn(A::T) -> R::T>(code);
     Ok(move |a: A| R::from::<R::T>(code(a.into())))
@@ -1215,14 +1214,14 @@ unsafe fn gallop_first1<A: IntoSparkleType, R: FromSparkleType>(
 #[cfg(test)]
 unsafe fn gallop_first2<A1: IntoSparkleType, A2: IntoSparkleType, R: FromSparkleType>(
     report: &Report,
-) -> Result<impl Fn(A1, A2) -> R, ReportError> {
+) -> ReportResult<impl Fn(A1, A2) -> R> {
     let code = gallop_first(report)?;
     let code = mem::transmute::<_, fn(A1::T, A2::T) -> R::T>(code);
     Ok(move |a1: A1, a2: A2| R::from::<R::T>(code(a1.into(), a2.into())))
 }
 
 #[cfg(test)]
-fn gallop_first(report: &Report) -> Result<*const u8, ReportError> {
+fn gallop_first(report: &Report) -> ReportResult<*const u8> {
     let mut sender = simple_jit_sender();
     let mut globals = Callables::new();
     let mut context = sender.module.make_context();
@@ -1233,7 +1232,7 @@ fn gallop_first(report: &Report) -> Result<*const u8, ReportError> {
         &mut sender,
         &mut globals,
         &mut context,
-        |_, _| { Ok(()) },
+        |_, _| Ok(()),
     )?;
 
     let id = mane_paragraphs[0];
@@ -1243,20 +1242,20 @@ fn gallop_first(report: &Report) -> Result<*const u8, ReportError> {
 }
 
 #[test]
-fn ands_two_booleans() -> Result<(), ReportError> {
+fn ands_two_booleans() -> ReportResult<()> {
     let result = unsafe {
         gallop_first2::<bool, bool, bool>(&Report {
-            name: "test report",
+            name: "how to do some logic",
             paragraphs: vec![Paragraph {
-                name: "test",
-                closing_name: "test",
+                name: "logic",
+                closing_name: "logic",
                 mane: true,
-                args: vec![Arg(Boolean, "one"), Arg(Boolean, "two")],
+                args: vec![Arg(Boolean, "a"), Arg(Boolean, "b")],
                 return_type: Some(Boolean),
                 statements: vec![Statement::Return(Expr::BinOp(
                     BinOperator::AddOrAnd,
-                    Box::new(Expr::Call(Call("one", vec![]))),
-                    Box::new(Expr::Call(Call("two", vec![]))),
+                    Box::new(Expr::Call(Call("a", vec![]))),
+                    Box::new(Expr::Call(Call("b", vec![]))),
                 ))],
             }],
             writer: "",
@@ -1272,20 +1271,20 @@ fn ands_two_booleans() -> Result<(), ReportError> {
 }
 
 #[test]
-fn adds_two_numbers() -> Result<(), ReportError> {
+fn adds_two_numbers() -> ReportResult<()> {
     let result = unsafe {
         gallop_first2::<f64, f64, f64>(&Report {
-            name: "test report",
+            name: "how to do some math",
             paragraphs: vec![Paragraph {
-                name: "test",
-                closing_name: "test",
+                name: "math",
+                closing_name: "math",
                 mane: true,
-                args: vec![Arg(Number, "one"), Arg(Number, "two")],
+                args: vec![Arg(Number, "x"), Arg(Number, "y")],
                 return_type: Some(Number),
                 statements: vec![Statement::Return(Expr::BinOp(
                     BinOperator::AddOrAnd,
-                    Box::new(Expr::Call(Call("one", vec![]))),
-                    Box::new(Expr::Call(Call("two", vec![]))),
+                    Box::new(Expr::Call(Call("x", vec![]))),
+                    Box::new(Expr::Call(Call("y", vec![]))),
                 ))],
             }],
             writer: "",
@@ -1299,26 +1298,64 @@ fn adds_two_numbers() -> Result<(), ReportError> {
 }
 
 #[test]
-fn concatenates_two_constant_strings() -> Result<(), ReportError> {
+fn concatenates_two_constant_strings() -> ReportResult<()> {
     let result = unsafe {
         gallop_first2::<&str, &str, String>(&Report {
-            name: "report name",
+            name: "how to join together",
             paragraphs: vec![Paragraph {
-                name: "test",
-                closing_name: "test",
+                name: "join",
+                closing_name: "join",
                 mane: true,
-                args: vec![Arg(Chars, "one"), Arg(Chars, "two")],
+                args: vec![Arg(Chars, "first"), Arg(Chars, "second")],
                 return_type: Some(Chars),
                 statements: vec![Statement::Return(Expr::Concat(vec![
-                    Expr::Call(Call("one", vec![])),
-                    Expr::Call(Call("two", vec![])),
+                    Expr::Call(Call("first", vec![])),
+                    Expr::Call(Call("second", vec![])),
                 ]))],
             }],
-            writer: ""
+            writer: "",
         })?
     };
 
-    assert_eq!(result("one", "two"), "onetwo");
+    assert_eq!(result("friendship is ", "magic"), "friendship is magic");
+
+    Ok(())
+}
+
+#[test]
+fn returns_allocated_string_from_paragraph() -> ReportResult<()> {
+    let result = unsafe {
+        gallop_first1::<&str, String>(&Report {
+            name: "how to cheer",
+            paragraphs: vec![
+                Paragraph {
+                    name: "test",
+                    closing_name: "test",
+                    mane: true,
+                    args: vec![Arg(Chars, "cheer")],
+                    return_type: Some(Chars),
+                    statements: vec![Statement::Return(Expr::Call(Call(
+                        "louder",
+                        vec![Expr::Call(Call("cheer", vec![]))],
+                    )))],
+                },
+                Paragraph {
+                    name: "louder",
+                    closing_name: "louder",
+                    mane: false,
+                    args: vec![Arg(Chars, "cheer")],
+                    return_type: Some(Chars),
+                    statements: vec![Statement::Return(Expr::Concat(vec![
+                        Expr::Call(Call("cheer", vec![])),
+                        Expr::Lit(Literal::Chars("!")),
+                    ]))],
+                },
+            ],
+            writer: "",
+        })?
+    };
+
+    assert_eq!(result("yay"), "yay!");
 
     Ok(())
 }
