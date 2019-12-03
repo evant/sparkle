@@ -878,7 +878,7 @@ fn send_expression<'a, B: Backend>(
                                 .builder
                                 .ins()
                                 .stack_addr(sender.pointer_type, slot, 0);
-                        let buff_size = function_sender.builder.ins().iconst(types::I64, 24);
+                        let buff_size = function_sender.builder.ins().iconst(sender.pointer_type, 24);
                         float_to_string(
                             expr_value,
                             buff,
@@ -894,7 +894,8 @@ fn send_expression<'a, B: Backend>(
                 strings.push(str_value);
             }
 
-            let mut buff_size = function_sender.builder.ins().iconst(sender.pointer_type, 0);
+            let mut buff_size = function_sender.builder.ins().iconst(sender.pointer_type, 1);
+
             for string in &strings {
                 let len = strlen(*string, sender, &mut function_sender.builder)?;
                 buff_size = function_sender.builder.ins().iadd(buff_size, len);
@@ -1136,7 +1137,7 @@ fn concat_strings<B: Backend>(
     let mut sig = sender.module.make_signature();
     sig.params.push(AbiParam::new(sender.pointer_type));
     sig.params.push(AbiParam::new(sender.pointer_type));
-    sig.params.push(AbiParam::new(types::I64));
+    sig.params.push(AbiParam::new(sender.pointer_type));
     sig.returns.push(AbiParam::new(sender.pointer_type));
 
     let callee = sender
@@ -1156,14 +1157,16 @@ fn alloc<B: Backend>(
 ) -> Result<Value, ReportError> {
     let mut sig = sender.module.make_signature();
     sig.params.push(AbiParam::new(sender.pointer_type));
+    sig.params.push(AbiParam::new(sender.pointer_type));
     sig.returns.push(AbiParam::new(sender.pointer_type));
 
+    let nmemb = builder.ins().iconst(sender.pointer_type, 1);
     let callee = sender
         .module
         .declare_function("calloc", Linkage::Import, &sig)?;
     let local_callee = sender.module.declare_func_in_func(callee, builder.func);
 
-    let call = builder.ins().call(local_callee, &[size]);
+    let call = builder.ins().call(local_callee, &[nmemb, size]);
 
     Ok(builder.inst_results(call)[0])
 }
@@ -1175,7 +1178,7 @@ fn strlen<B: Backend>(
 ) -> Result<Value, ReportError> {
     let mut sig = sender.module.make_signature();
     sig.params.push(AbiParam::new(sender.pointer_type));
-    sig.returns.push(AbiParam::new(sender.pointer_type));
+    sig.returns.push(AbiParam::new(types::I64));
 
     let callee = sender
         .module
