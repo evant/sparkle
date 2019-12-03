@@ -23,12 +23,11 @@ jobs:
     - name: Run tests
       run: cargo test --verbose
 
-# Disable windows for now, needs investigation if it can be gotten to work
-#  build-windows:
-#    runs-on: windows-latest
-#    steps:
-#    - uses: actions/checkout@v1
-#    - name: Build
-#      run: cargo build --verbose
-#    - name: Run tests
-#      run: cargo test --verbose
+  build-windows:
+    runs-on: windows-latest
+    steps:
+    - uses: actions/checkout@v1
+    - name: Build
+      run: cargo build --verbose
+    - name: Run tests
+      run: cargo test --verbose

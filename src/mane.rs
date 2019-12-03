@@ -128,6 +128,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                         "host" => TARGET_HOST,
                         "linux" => TARGET_LINUX,
                         "macos" => TARGET_MACOS,
+                        "windows" => TARGET_WINDOWS,
                         t => {
                             eprintln!("unrecognized target: {}", t);
                             exit(1);
