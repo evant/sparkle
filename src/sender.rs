@@ -7,7 +7,6 @@ use cranelift::codegen::Context;
 use cranelift::prelude::settings::{self, Configurable};
 use cranelift::prelude::*;
 use cranelift::prelude::{isa, AbiParam, FunctionBuilder, FunctionBuilderContext};
-use cranelift_faerie::{FaerieBackend, FaerieBuilder, FaerieTrapCollection};
 use cranelift_module::{default_libcall_names, Backend, DataContext, FuncId, Linkage, Module};
 use cranelift_simplejit::{SimpleJITBackend, SimpleJITBuilder};
 use target_lexicon::Triple;
@@ -21,11 +20,13 @@ use cranelift::codegen::ir::StackSlot;
 use std::collections::HashSet;
 use std::ffi::{CStr, CString};
 use std::os::raw::c_char;
+use cranelift_object::{ObjectBackend, ObjectBuilder, ObjectTrapCollection};
+use std::io::Write;
 
 type ReportResult<T> = Result<T, ReportError>;
 
 pub fn send_out<'a>(report: &'a Report, name: &str, target: &str) -> ReportResult<()> {
-    let mut sender = faerie_sender(name, target)?;
+    let mut sender = object_sender(name, target)?;
     let mut globals = Callables::new();
     let mut context = sender.module.make_context();
     send(report, &mut sender, &mut globals, &mut context, |_, _| {
@@ -33,8 +34,8 @@ pub fn send_out<'a>(report: &'a Report, name: &str, target: &str) -> ReportResul
     })?;
     sender.finalize(&mut context);
     let product = sender.module.finish();
-    let file = File::create(name.to_owned() + ".o").expect("error opening file");
-    product.write(file).expect("error writing to file");
+    let mut file = File::create(name.to_owned() + ".o").expect("error opening file");
+    file.write(&product.emit().unwrap()).expect("error writing to file");
 
     Ok(())
 }
@@ -145,19 +146,19 @@ pub fn proofread<'a>(report: &'a Report<'a>) -> ReportResult<()> {
     Ok(())
 }
 
-fn faerie_sender(name: &str, target: &str) -> ReportResult<Sender<FaerieBackend>> {
+fn object_sender(name: &str, target: &str) -> ReportResult<Sender<ObjectBackend>> {
     let mut flag_builder = settings::builder();
     flag_builder.enable("is_pic").unwrap();
     let isa_builder = isa::lookup(Triple::from_str(target)?)?;
     let isa = isa_builder.finish(settings::Flags::new(flag_builder));
-    let builder = FaerieBuilder::new(
+    let builder = ObjectBuilder::new(
         isa,
         name.to_owned(),
-        FaerieTrapCollection::Disabled,
+        ObjectTrapCollection::Disabled,
         default_libcall_names(),
-    )
-    .unwrap();
-    let module = Module::<FaerieBackend>::new(builder);
+    ).unwrap();
+
+    let module = Module::<ObjectBackend>::new(builder);
 
     Ok(Sender::new(module))
 }
