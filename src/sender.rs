@@ -22,6 +22,8 @@ use std::collections::HashSet;
 use std::ffi::{CStr, CString};
 use std::io::Write;
 use std::os::raw::c_char;
+use std::path::{Path, PathBuf};
+use std::process::Command;
 
 type ReportResult<T> = Result<T, ReportError>;
 
@@ -33,11 +35,31 @@ pub fn send_out<'a>(report: &'a Report, name: &str, target: &str) -> ReportResul
         Ok(())
     })?;
     sender.finalize(&mut context);
+    let is_windows = sender.is_windows();
     let product = sender.module.finish();
-    let ext = if sender.is_windows { ".obj" } else { ".o" };
-    let mut file = File::create(name.to_owned() + ext).expect("error opening file");
+    let ext = if is_windows { ".obj" } else { ".o" };
+    let path_name = name.to_owned() + ext;
+    let path = Path::new(&path_name);
+    let mut file = File::create(path).expect("error opening file");
     file.write(&product.emit().unwrap())
         .expect("error writing to file");
+
+    // If we are on the host system we can link.
+    if target == crate::TARGET_HOST {
+        if cfg!(target_os = "windows") {
+            cc::windows_registry::find(target, "link").unwrap()
+                .arg(path_name)
+                .arg("ucrt.lib")
+                .arg("/entry:main")
+                .output().unwrap();
+        } else {
+            Command::new("cc")
+                .arg(path_name)
+                .arg("-o")
+                .arg(name)
+                .output().unwrap();
+        }
+    }
 
     Ok(())
 }
@@ -1077,7 +1099,7 @@ fn float_to_string<B: Backend>(
     builder: &mut FunctionBuilder,
 ) -> ReportResult<Value> {
     let mut sig = sender.module.make_signature();
-    let result = if sender.is_windows {
+    let result = if sender.is_windows() {
         // use _gcvt on windows as snprintf is inlined so there's no symbol to dynamically link to.
         sig.params.push(AbiParam::new(types::F64));
         sig.params.push(AbiParam::new(types::I32));
@@ -1246,7 +1268,7 @@ fn strlen<B: Backend>(
 }
 
 struct Sender<B: Backend> {
-    is_windows: bool,
+    triple: Triple,
     module: Module<B>,
     data_context: DataContext,
     constants: HashSet<String>,
@@ -1257,12 +1279,16 @@ impl<B: Backend> Sender<B> {
     fn new(module: Module<B>, triple: Triple) -> Sender<B> {
         let pointer_type = module.target_config().pointer_type();
         Sender {
-            is_windows: triple.operating_system == OperatingSystem::Windows,
+            triple,
             module,
             data_context: DataContext::new(),
             constants: HashSet::new(),
             pointer_type,
         }
+    }
+
+    fn is_windows(&self) -> bool {
+        self.triple.operating_system == OperatingSystem::Windows
     }
 
     fn finalize(&mut self, context: &mut Context) {

@@ -15,6 +15,7 @@ cranelift-module = { git = "https://github.com/bytecodealliance/cranelift.git", 
 cranelift-simplejit = { git = "https://github.com/bytecodealliance/cranelift.git", rev = "545d40b" }
 cranelift-object = { git = "https://github.com/bytecodealliance/cranelift.git", rev = "545d40b" }
 target-lexicon = "0.9.0"
+cc = "1.0.47"
 
 [dev-dependencies]
 assert_cmd = "0.11.1"
