@@ -2,7 +2,8 @@
 
 A compiler for FiM++ written in rust.
 
-The language mostly follows the [1.0 reference](https://docs.google.com/document/d/1gU-ZROmZu0Xitw_pfC1ktCDvJH5rM85TxxQf5pg_xmg/edit). You can find notes about differing implementation details in [docs/notes.md](https://github.com/evant/sparkle/blob/master/docs/notes.md).
+The language mostly follows the [1.0 reference](https://docs.google.com/document/d/1gU-ZROmZu0Xitw_pfC1ktCDvJH5rM85TxxQf5pg_xmg/edit).
+You can find notes about differing implementation details in [docs/notes.md](https://github.com/evant/sparkle/blob/master/docs/notes.md).
 You can find several sample programs in the [examples](https://github.com/evant/sparkle/tree/master/examples) dir.
 
 ## Building
@@ -19,7 +20,9 @@ cargo build --release
 
 ## Usage
 
-You may execute a report directly with `sparkle gallop [report]` or compile to an object file with `sparkle send [report]`. You will then need to use your system's linker to link that object file into an executuable.
+You may execute a report directly with `sparkle gallop [report]` or compile to an object file with 
+`sparkle send [report]`. You will then need to use your system's linker to link that object file 
+into an executable.
 
 ### Linux/MacOS
 ```
