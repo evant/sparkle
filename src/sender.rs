@@ -47,7 +47,7 @@ pub fn send_out<'a>(report: &'a Report, name: &str, target: &str) -> ReportResul
     // If we are on the host system we can link.
     if target == crate::TARGET_HOST {
         if cfg!(target_os = "windows") {
-            cc::windows_registry::find(target, "link").unwrap()
+            cc::windows_registry::find(target, "link.exe").unwrap()
                 .arg(path_name)
                 .arg("ucrt.lib")
                 .arg("/entry:main")
