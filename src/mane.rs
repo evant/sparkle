@@ -144,8 +144,8 @@ fn main() -> Result<(), Box<dyn Error>> {
             };
             sender::send_out(&ast, name, target)?
         }
-        Command::Gallop => sender::gallop_mane(&ast)?,
-        Command::Proofread => sender::proofread(&ast)?,
+        Command::Gallop => sender::gallop_mane(&ast, TARGET_HOST)?,
+        Command::Proofread => sender::proofread(&ast, TARGET_HOST)?,
     };
 
     Ok(())

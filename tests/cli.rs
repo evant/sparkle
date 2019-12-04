@@ -132,16 +132,20 @@ fn sends_hello_canterlot() -> TestResult {
 
     cmd.assert().success();
 
-    let mut cc_cmd = Command::new("cc");
+    let mut report_cmd = if cfg!(target_os = "windows") {
+        let mut build = Command::new("canter.bat");
 
-    cc_cmd
-        .arg("hello_canterlot.o")
-        .arg("-o")
-        .arg("hello_canterlot");
+        build.assert().success();
 
-    cc_cmd.assert().success();
+        Command::new("hello_canterlot.exe")
+    } else {
+        let mut build = Command::new("./canter.sh");
 
-    let mut report_cmd = Command::new("./hello_canterlot");
+        build.assert().success();
+
+        Command::new("./hello_canterlot")
+    };
+
     report_cmd.assert().success().stdout("Hello, Canterlot!\n");
 
     Ok(())

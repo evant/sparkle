@@ -9,7 +9,7 @@ use cranelift::prelude::*;
 use cranelift::prelude::{isa, AbiParam, FunctionBuilder, FunctionBuilderContext};
 use cranelift_module::{default_libcall_names, Backend, DataContext, FuncId, Linkage, Module};
 use cranelift_simplejit::{SimpleJITBackend, SimpleJITBuilder};
-use target_lexicon::Triple;
+use target_lexicon::{OperatingSystem, Triple};
 
 use crate::error::ReportError;
 use crate::pst;
@@ -17,11 +17,11 @@ use crate::pst::{Arg, BinOperator, Call, Expr, Literal, Paragraph, Report, State
 use crate::types::Type::{Boolean, Chars, Number};
 use crate::vars::{Callable, Callables};
 use cranelift::codegen::ir::StackSlot;
+use cranelift_object::{ObjectBackend, ObjectBuilder, ObjectTrapCollection};
 use std::collections::HashSet;
 use std::ffi::{CStr, CString};
-use std::os::raw::c_char;
-use cranelift_object::{ObjectBackend, ObjectBuilder, ObjectTrapCollection};
 use std::io::Write;
+use std::os::raw::c_char;
 
 type ReportResult<T> = Result<T, ReportError>;
 
@@ -34,14 +34,16 @@ pub fn send_out<'a>(report: &'a Report, name: &str, target: &str) -> ReportResul
     })?;
     sender.finalize(&mut context);
     let product = sender.module.finish();
-    let mut file = File::create(name.to_owned() + ".o").expect("error opening file");
-    file.write(&product.emit().unwrap()).expect("error writing to file");
+    let ext = if sender.is_windows { ".obj" } else { ".o" };
+    let mut file = File::create(name.to_owned() + ext).expect("error opening file");
+    file.write(&product.emit().unwrap())
+        .expect("error writing to file");
 
     Ok(())
 }
 
-pub fn gallop_mane(report: &Report) -> ReportResult<()> {
-    let mut sender = simple_jit_sender();
+pub fn gallop_mane(report: &Report, target: &str) -> ReportResult<()> {
+    let mut sender = simple_jit_sender(target)?;
     let mut globals = Callables::new();
     let mut context = sender.module.make_context();
     let id = send(report, &mut sender, &mut globals, &mut context, |_, _| {
@@ -120,8 +122,8 @@ unsafe impl FromSparkleType for String {
     }
 }
 
-pub fn proofread<'a>(report: &'a Report<'a>) -> ReportResult<()> {
-    let mut sender = simple_jit_sender();
+pub fn proofread<'a>(report: &'a Report<'a>, target: &str) -> ReportResult<()> {
+    let mut sender = simple_jit_sender(target)?;
     let mut globals = Callables::new();
     let mut context = sender.module.make_context();
 
@@ -149,25 +151,28 @@ pub fn proofread<'a>(report: &'a Report<'a>) -> ReportResult<()> {
 fn object_sender(name: &str, target: &str) -> ReportResult<Sender<ObjectBackend>> {
     let mut flag_builder = settings::builder();
     flag_builder.enable("is_pic").unwrap();
-    let isa_builder = isa::lookup(Triple::from_str(target)?)?;
+    let triple = Triple::from_str(target)?;
+    let isa_builder = isa::lookup(triple.clone())?;
     let isa = isa_builder.finish(settings::Flags::new(flag_builder));
     let builder = ObjectBuilder::new(
         isa,
         name.to_owned(),
         ObjectTrapCollection::Disabled,
         default_libcall_names(),
-    ).unwrap();
+    )
+    .unwrap();
 
     let module = Module::<ObjectBackend>::new(builder);
 
-    Ok(Sender::new(module))
+    Ok(Sender::new(module, triple))
 }
 
-fn simple_jit_sender() -> Sender<SimpleJITBackend> {
+fn simple_jit_sender(target: &str) -> ReportResult<Sender<SimpleJITBackend>> {
+    let triple = Triple::from_str(target)?;
     let builder = SimpleJITBuilder::new(default_libcall_names());
     let module = Module::<SimpleJITBackend>::new(builder);
 
-    Sender::new(module)
+    Ok(Sender::new(module, triple))
 }
 
 fn send<'a, B: Backend>(
@@ -879,7 +884,10 @@ fn send_expression<'a, B: Backend>(
                                 .builder
                                 .ins()
                                 .stack_addr(sender.pointer_type, slot, 0);
-                        let buff_size = function_sender.builder.ins().iconst(sender.pointer_type, 24);
+                        let buff_size = function_sender
+                            .builder
+                            .ins()
+                            .iconst(sender.pointer_type, 24);
                         float_to_string(
                             expr_value,
                             buff,
@@ -1069,24 +1077,70 @@ fn float_to_string<B: Backend>(
     builder: &mut FunctionBuilder,
 ) -> ReportResult<Value> {
     let mut sig = sender.module.make_signature();
-    sig.params.push(AbiParam::new(sender.pointer_type));
-    sig.params.push(AbiParam::new(types::I64));
-    sig.params.push(AbiParam::new(sender.pointer_type));
-    sig.params.push(AbiParam::new(types::F64));
-    sig.returns.push(AbiParam::new(types::I32));
+    let result = if sender.is_windows {
+        // use _gcvt on windows as snprintf is inlined so there's no symbol to dynamically link to.
+        sig.params.push(AbiParam::new(types::F64));
+        sig.params.push(AbiParam::new(types::I32));
+        sig.params.push(AbiParam::new(sender.pointer_type));
+        sig.returns.push(AbiParam::new(sender.pointer_type));
 
-    let callee = sender
-        .module
-        .declare_function("snprintf", Linkage::Import, &sig)?;
-    let local_callee = sender.module.declare_func_in_func(callee, builder.func);
+        let callee = sender
+            .module
+            .declare_function("_gcvt", Linkage::Import, &sig)?;
+        let local_callee = sender.module.declare_func_in_func(callee, builder.func);
 
-    let format = reference_constant_string("%g", sender, builder)?;
-    let call = builder.ins().call(
-        local_callee,
-        &[buffer_value, buffer_size, format, float_value],
-    );
+        let two = builder.ins().iconst(types::I64, 2);
+        let s = builder.ins().isub(buffer_size, two);
+        let digits = builder.ins().ireduce(types::I32, s);
+        let call = builder
+            .ins()
+            .call(local_callee, &[float_value, digits, buffer_value]);
+        let result = builder.inst_results(call)[0];
 
-    Ok(builder.inst_results(call)[0])
+        // _gcvt always inserts a decimal at the end, ex: 10 -> "10.", strip it if this happens.
+        let len = strlen(result, sender, builder)?;
+        let one = builder.ins().iconst(types::I64, 1);
+        let last_char_index = builder.ins().isub(len, one);
+        let last_char_ptr = builder.ins().iadd(result, last_char_index);
+        let last_char = builder
+            .ins()
+            .load(types::I8, MemFlags::new(), last_char_ptr, 0);
+        let cmp = builder.ins().icmp_imm(IntCC::Equal, last_char, b'.' as i64);
+
+        let merge_block = builder.create_ebb();
+
+        builder.ins().brz(cmp, merge_block, &[]);
+
+        let zero = builder.ins().iconst(types::I8, 0);
+        builder.ins().store(MemFlags::new(), zero, last_char_ptr, 0);
+
+        builder.ins().jump(merge_block, &[]);
+
+        builder.switch_to_block(merge_block);
+        builder.seal_block(merge_block);
+
+        result
+    } else {
+        sig.params.push(AbiParam::new(sender.pointer_type));
+        sig.params.push(AbiParam::new(types::I64));
+        sig.params.push(AbiParam::new(sender.pointer_type));
+        sig.params.push(AbiParam::new(types::F64));
+        sig.returns.push(AbiParam::new(types::I32));
+
+        let callee = sender
+            .module
+            .declare_function("snprintf", Linkage::Import, &sig)?;
+        let local_callee = sender.module.declare_func_in_func(callee, builder.func);
+
+        let format = reference_constant_string("%g", sender, builder)?;
+        let call = builder.ins().call(
+            local_callee,
+            &[buffer_value, buffer_size, format, float_value],
+        );
+        builder.inst_results(call)[0]
+    };
+
+    Ok(result)
 }
 
 fn bool_to_string<B: Backend>(
@@ -1192,6 +1246,7 @@ fn strlen<B: Backend>(
 }
 
 struct Sender<B: Backend> {
+    is_windows: bool,
     module: Module<B>,
     data_context: DataContext,
     constants: HashSet<String>,
@@ -1199,9 +1254,10 @@ struct Sender<B: Backend> {
 }
 
 impl<B: Backend> Sender<B> {
-    fn new(module: Module<B>) -> Sender<B> {
+    fn new(module: Module<B>, triple: Triple) -> Sender<B> {
         let pointer_type = module.target_config().pointer_type();
         Sender {
+            is_windows: triple.operating_system == OperatingSystem::Windows,
             module,
             data_context: DataContext::new(),
             constants: HashSet::new(),
@@ -1262,7 +1318,7 @@ unsafe fn gallop_first2<A1: IntoSparkleType, A2: IntoSparkleType, R: FromSparkle
 
 #[cfg(test)]
 fn gallop_first(report: &Report) -> ReportResult<*const u8> {
-    let mut sender = simple_jit_sender();
+    let mut sender = simple_jit_sender(crate::TARGET_HOST)?;
     let mut globals = Callables::new();
     let mut context = sender.module.make_context();
 

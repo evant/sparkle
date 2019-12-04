@@ -4,4 +4,6 @@
 *.iml
 
 *.o
+*.obj
+*.exe
 hello_canterlot
