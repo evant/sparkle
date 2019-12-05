@@ -49,7 +49,8 @@ ambiguity parsing that, much like printing. ex: `Spike's age is now 10 plus 1`.
 
 ## Comparision
 
-Unlike the reference, values are _not_ converted to strings if their types differ. It is a compiler error instead.
+Unlike the reference, values are _not_ converted to strings if their types differ. It is a compiler error instead. You
+can do this explicilty with concatination ex: `"1" is 1 ""`.
 
 ## Calling
 
