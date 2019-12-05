@@ -133,7 +133,12 @@ fn sends_hello_canterlot() -> TestResult {
     cmd.assert().success();
 
     let mut report_cmd = if cfg!(target_os = "windows") {
+        let tool = cc::windows_registry::find_tool("x86_64-pc-windows-msvc", "cl.exe").unwrap();
+        //TODO: a better way?
+        let env_path = tool.path().parent().unwrap().parent().unwrap().parent().unwrap().parent().unwrap().parent().unwrap().parent().unwrap().parent().unwrap().join("Auxiliary\\Build\\vcvarsall.bat");
+
         let mut build = Command::new("canter.bat");
+        build.arg(env_path);
 
         build.assert().success();
 

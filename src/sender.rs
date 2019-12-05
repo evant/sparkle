@@ -1,6 +1,6 @@
 use std::fs::File;
 
-use std::mem;
+use std::{mem, io, env};
 use std::str::FromStr;
 
 use cranelift::codegen::Context;
@@ -46,20 +46,25 @@ pub fn send_out<'a>(report: &'a Report, name: &str, target: &str) -> ReportResul
 
     // If we are on the host system we can link.
     if target == crate::TARGET_HOST {
-        if cfg!(target_os = "windows") {
-            cc::windows_registry::find(target, "link.exe").unwrap()
-                .arg(path_name)
-                .arg("ucrt.lib")
-                .arg("/entry:main")
-                .output().unwrap();
+        let output = if cfg!(target_os = "windows") {
+            //TODO
+//            let tool = cc::windows_registry::find_tool(target, "link.exe").unwrap();
+//            tool.to_command()
+//                .arg(path_name)
+//                .arg("ucrt.lib")
+//                .arg("/entry:main")
+//                .output().unwrap()
         } else {
-            Command::new("cc")
+            let output = Command::new("cc")
                 .arg(path_name)
                 .arg("-o")
                 .arg(name)
                 .output().unwrap();
-        }
+            io::stdout().write_all(&output.stdout).unwrap();
+            io::stderr().write_all(&output.stderr).unwrap();
+        };
     }
+
 
     Ok(())
 }
