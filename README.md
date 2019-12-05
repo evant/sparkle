@@ -20,19 +20,22 @@ cargo build --release
 
 ## Usage
 
-You may execute a report directly with `sparkle gallop [report]` or compile to an object file with 
-`sparkle send [report]`. You will then need to use your system's linker to link that object file 
-into an executable.
+You may execute a report directly with `sparkle gallop [report]` or compile to an executable with 
+`sparkle send [report]`.
+
+
 
 ### Linux/MacOS
 ```
 sparkle send examples/hello_canterlot.fpp
-cc hello_canterlot.o -o hello_canterlot
 ./hello_canterlot
 ```
 
 ### Windows
 (Using the Visual Studio 2019 [Build Tools](https://visualstudio.microsoft.com/downloads/#build-tools-for-visual-studio-2019))
+
+You currently need to link the output on windows, this is tempoary until I can figure out how to invoke the linker.
+
 ```
 "C:\Program Files (x86)\Microsoft Visual Studio\2019\BuildTools\VC\Auxiliary\Build\vcvarsall.bat" x64
 sparkle.exe send examples/hello_canterlot.fpp
