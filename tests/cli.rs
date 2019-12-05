@@ -181,7 +181,6 @@ fn windows_env_var_cmd() {
     panic!();
 }
 
-#[cfg(target_os = "windows")]
 fn get_windows_env_var_cmd() -> PathBuf {
     let tool = cc::windows_registry::find_tool("x86_64-pc-windows-msvc", "cl.exe").unwrap();
     //TODO: a better way?
