@@ -2,6 +2,7 @@ use std::process::Command;
 
 use assert_cmd::cargo::CargoError;
 use assert_cmd::prelude::*;
+use std::path::PathBuf;
 
 type TestResult = Result<(), CargoError>;
 
@@ -37,7 +38,8 @@ fn say_hello_to_everypony() -> TestResult {
          Hello, Pinkie Pie\n\
          Hello, Fluttershy\n\
          Hello, Rarity\n\
-         Hello, Applejack\n".replace("\n", EOL)
+         Hello, Applejack\n"
+            .replace("\n", EOL),
     );
 
     Ok(())
@@ -58,7 +60,8 @@ fn math() -> TestResult {
          5.5\n\
          6\n\
          11\n\
-         10\n".replace("\n", EOL)
+         10\n"
+            .replace("\n", EOL),
     );
 
     Ok(())
@@ -78,7 +81,8 @@ fn logic() -> TestResult {
          yes\n\
          no\n\
          no\n\
-         yes\n".replace("\n", EOL)
+         yes\n"
+            .replace("\n", EOL),
     );
 
     Ok(())
@@ -94,7 +98,8 @@ fn variables() -> TestResult {
         "0\n\
          6\n\
          Tallulah\n\
-         yes\n".replace("\n", EOL)
+         yes\n"
+            .replace("\n", EOL),
     );
 
     Ok(())
@@ -110,7 +115,8 @@ fn branches() -> TestResult {
         "I wish I were a tree\n\
          I'll help them\n\
          I'll help them\n\
-         I'll help them\n".replace("\n", EOL)
+         I'll help them\n"
+            .replace("\n", EOL),
     );
 
     Ok(())
@@ -128,7 +134,8 @@ fn comparisons() -> TestResult {
          yes\n\
          no\n\
          yes\n\
-         yes\n".replace("\n", EOL)
+         yes\n"
+            .replace("\n", EOL),
     );
 
     Ok(())
@@ -143,28 +150,8 @@ fn sends_hello_canterlot() -> TestResult {
     cmd.assert().success();
 
     let mut report_cmd = if cfg!(target_os = "windows") {
-        let tool = cc::windows_registry::find_tool("x86_64-pc-windows-msvc", "cl.exe").unwrap();
-        //TODO: a better way?
-        let env_path = tool
-            .path()
-            .parent()
-            .unwrap()
-            .parent()
-            .unwrap()
-            .parent()
-            .unwrap()
-            .parent()
-            .unwrap()
-            .parent()
-            .unwrap()
-            .parent()
-            .unwrap()
-            .parent()
-            .unwrap()
-            .join("Auxiliary\\Build\\vcvarsall.bat");
-
         let mut build = Command::new("canter.bat");
-        build.arg(env_path);
+        build.arg(get_windows_env_var_cmd());
 
         build.assert().success();
 
@@ -177,7 +164,43 @@ fn sends_hello_canterlot() -> TestResult {
         Command::new("./hello_canterlot")
     };
 
-    report_cmd.assert().success().stdout("Hello, Canterlot!".to_string() + EOL);
+    report_cmd
+        .assert()
+        .success()
+        .stdout("Hello, Canterlot!".to_string() + EOL);
 
     Ok(())
+}
+
+#[test]
+#[cfg(target_os = "windows")]
+#[ignore]
+fn windows_env_var_cmd() {
+    println!("{:?} x64", get_windows_env_var_cmd());
+
+    panic!();
+}
+
+#[cfg(target_os = "windows")]
+fn get_windows_env_var_cmd() -> PathBuf {
+    let tool = cc::windows_registry::find_tool("x86_64-pc-windows-msvc", "cl.exe").unwrap();
+    //TODO: a better way?
+    let env_path = tool
+        .path()
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("Auxiliary\\Build\\vcvarsall.bat");
+    env_path
 }

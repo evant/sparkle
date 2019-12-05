@@ -1,7 +1,7 @@
 use std::fs::File;
 
-use std::{mem, io, env};
 use std::str::FromStr;
+use std::{env, io, mem};
 
 use cranelift::codegen::Context;
 use cranelift::prelude::settings::{self, Configurable};
@@ -48,23 +48,23 @@ pub fn send_out<'a>(report: &'a Report, name: &str, target: &str) -> ReportResul
     if target == crate::TARGET_HOST {
         let output = if cfg!(target_os = "windows") {
             //TODO
-//            let tool = cc::windows_registry::find_tool(target, "link.exe").unwrap();
-//            tool.to_command()
-//                .arg(path_name)
-//                .arg("ucrt.lib")
-//                .arg("/entry:main")
-//                .output().unwrap()
+            //            let tool = cc::windows_registry::find_tool(target, "link.exe").unwrap();
+            //            tool.to_command()
+            //                .arg(path_name)
+            //                .arg("ucrt.lib")
+            //                .arg("/entry:main")
+            //                .output().unwrap()
         } else {
             let output = Command::new("cc")
                 .arg(path_name)
                 .arg("-o")
                 .arg(name)
-                .output().unwrap();
+                .output()
+                .unwrap();
             io::stdout().write_all(&output.stdout).unwrap();
             io::stderr().write_all(&output.stderr).unwrap();
         };
     }
-
 
     Ok(())
 }
@@ -984,14 +984,20 @@ fn send_comparison<B: Backend>(
                 )?;
                 function_sender.builder.ins().icmp_imm(icc, result, 0)
             }
-            Number => function_sender
-                .builder
-                .ins()
-                .fcmp(fcc, left_value, right_value),
-            Boolean => function_sender
-                .builder
-                .ins()
-                .icmp(icc, left_value, right_value),
+            Number => {
+                let cmp = function_sender
+                    .builder
+                    .ins()
+                    .fcmp(fcc, left_value, right_value);
+                function_sender.builder.ins().bint(types::I32, cmp)
+            },
+            Boolean => {
+                let cmp = function_sender
+                    .builder
+                    .ins()
+                    .icmp(icc, left_value, right_value);
+                function_sender.builder.ins().bint(types::I32, cmp)
+            },
         },
     ))
 }
@@ -1486,6 +1492,36 @@ fn returns_allocated_string_from_paragraph() -> ReportResult<()> {
     };
 
     assert_eq!(result("yay"), "yay!!");
+
+    Ok(())
+}
+
+#[test]
+fn returns_correct_comparison() -> ReportResult<()> {
+    let less_than = unsafe {
+        gallop_first2::<f64, f64, bool>(&Report {
+            name: "comparing apples",
+            paragraphs: vec![Paragraph {
+                name: "test",
+                closing_name: "test",
+                mane: true,
+                args: vec![
+                    Arg(Number, "Applejack's apples"),
+                    Arg(Number, "apples on the tree"),
+                ],
+                return_type: Some(Boolean),
+                statements: vec![Statement::Return(Expr::BinOp(
+                    BinOperator::LessThan,
+                    Box::new(Expr::Call(Call("Applejack's apples", vec![]))),
+                    Box::new(Expr::Call(Call("apples on the tree", vec![]))),
+                ))],
+            }],
+            writer: ""
+        })?
+    };
+
+    assert_eq!(less_than(10f64, 100f64), true);
+    assert_eq!(less_than(100f64, 10f64), false);
 
     Ok(())
 }
