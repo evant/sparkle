@@ -456,10 +456,10 @@ fn send_statement<'a, B: Backend>(
         Statement::Increment(var) => send_increment_statement(var, vars, sender, function_sender),
         Statement::Decrement(var) => send_decrement_statement(var, vars, sender, function_sender),
         Statement::If(cond, if_, else_) => {
-            send_if_else(cond, if_, else_, return_type, sender, vars, function_sender)
+            send_if_else(cond, if_, else_, return_type, sender, &mut vars.create_child(), function_sender)
         }
         Statement::While(cond, body) => {
-            send_while_statement(cond, body, return_type, sender, vars, function_sender)
+            send_while_statement(cond, body, return_type, sender, &mut vars.create_child(), function_sender)
         }
         Statement::Call(call) => {
             send_call(call, sender, vars, function_sender)?;

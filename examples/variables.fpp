@@ -12,4 +12,14 @@ Did you know that Pinkie Pie always is right?
 I wrote Pinkie Pie! (yes)
 That's all about variables.
 
+Today I learned to scope variables:
+Did you know that the changeling is "Applejack"?
+I said the changeling.
+When the changeling is "Applejack",
+Did you know that the changeling is "Fluttershy"?
+I said the changeling.
+That's what I would do.
+I said the changeling.
+That's all about scope variables.
+
 Your faithful student: Twilight Sparkle.
