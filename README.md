@@ -15,7 +15,7 @@ git clone https://github.com/evant/sparkle.git
 cd sparkle
 cargo build --release
 ./target/release/sparkle help
-./target/release/sparkle gallop examples/hello_canterlot.fpp
+./target/release/sparkle gallop examples/hello_equestria.fpp
 ```
 
 ## Usage
