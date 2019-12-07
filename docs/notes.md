@@ -58,3 +58,8 @@ You can use arbitrary expressions when calling another paragraph. However, using
 operator is ambiguous in this case so it's disabled in this context. You can either: use the prefix
 version, use an alternate name, or assign to a variable and use that instead. ex:
 `I remembered to give my friend Appljack's apples plus 1 and add Rarity's dresses and 2.`
+
+## Scoping
+
+Variable scoping isn't described at all in the reference. I went with lexical scoped variables. You may also redeclare a 
+variable at any time in the same scope and it'll shadow the previous one.

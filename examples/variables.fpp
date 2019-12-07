@@ -13,6 +13,7 @@ I wrote Pinkie Pie! (yes)
 That's all about variables.
 
 Today I learned to scope variables:
+Did you know that the changeling is "Rarity"?
 Did you know that the changeling is "Applejack"?
 I said the changeling.
 When the changeling is "Applejack",
