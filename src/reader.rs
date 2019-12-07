@@ -9,7 +9,10 @@ use nom::sequence::{delimited, pair, preceded, separated_pair, terminated, tuple
 use nom::IResult;
 
 use crate::error::ReportError;
-use crate::pst::{Arg, BinOperator, Call, Expr, Literal, Paragraph, Report, Statement, Variable};
+use crate::pst::{
+    Arg, BinOperator, Call, Declaration, DeclareVar, Expr, Literal, Paragraph, Report, Statement,
+    Variable,
+};
 use crate::types::Type;
 use crate::types::Type::{Boolean, Chars, Number};
 
@@ -111,13 +114,16 @@ fn report(s: &str) -> ReadResult<Report> {
     map(
         tuple((
             terminated(report_declaration, whitespace0),
-            many0(terminated(paragraph, whitespace0)),
+            many0(terminated(
+                alt((var_declaration, paragraph_declaration)),
+                whitespace0,
+            )),
             report_closing,
         )),
-        |(declaration, paragraphs, closing)| Report {
-            name: declaration,
-            writer: closing,
-            paragraphs,
+        |(name, declarations, writer)| Report {
+            name,
+            writer,
+            declarations,
         },
     )(s)
 }
@@ -139,17 +145,21 @@ fn report_declaration(s: &str) -> ReadResult<&str> {
     )(s)
 }
 
+fn paragraph_declaration(s: &str) -> ReadResult<Declaration> {
+    map(paragraph, Declaration::Paragraph)(s)
+}
+
 fn paragraph(s: &str) -> ReadResult<Paragraph> {
     map(
         tuple((
             opt(terminated(tag("Today"), whitespace1)),
-            terminated(paragraph_declaration, whitespace0),
+            terminated(declare_paragraph, whitespace0),
             many0(statement),
             paragraph_closing,
         )),
-        |(today, (declaration, return_type, args), statements, closing)| Paragraph {
-            name: declaration,
-            closing_name: closing,
+        |(today, (name, return_type, args), statements, closing_name)| Paragraph {
+            name,
+            closing_name,
             mane: today.is_some(),
             args,
             return_type,
@@ -173,7 +183,7 @@ fn keyword_using(s: &str) -> ReadResult<&str> {
     tag("using")(s)
 }
 
-fn paragraph_declaration(s: &str) -> ReadResult<(&str, Option<Type>, Vec<Arg>)> {
+fn declare_paragraph(s: &str) -> ReadResult<(&str, Option<Type>, Vec<Arg>)> {
     terminated(
         tuple((
             preceded(preceded(keyword_declare_paragraph, whitespace0), identifier),
@@ -241,6 +251,17 @@ fn keyword_declare_statement(s: &str) -> ReadResult<&str> {
 }
 
 fn declare_statement(s: &str) -> ReadResult<Statement> {
+    map(declare_var, Statement::Declare)(s)
+}
+
+fn var_declaration(s: &str) -> ReadResult<Declaration> {
+    map(
+        terminated(declare_var, tuple((whitespace0, punctuation, whitespace0))),
+        Declaration::Var,
+    )(s)
+}
+
+fn declare_var(s: &str) -> ReadResult<DeclareVar> {
     map(
         preceded(
             preceded(keyword_declare_statement, whitespace1),
@@ -256,7 +277,7 @@ fn declare_statement(s: &str) -> ReadResult<Statement> {
                 opt(whitespace_delim(expr(true))),
             )),
         ),
-        |(name, is_const, type_, expr)| Statement::Declare(Variable(name), type_, expr, is_const),
+        |(name, is_const, type_, expr)| DeclareVar(Variable(name), type_, expr, is_const),
     )(s)
 }
 
@@ -1026,17 +1047,17 @@ fn parses_report_closing() {
 }
 
 #[test]
-fn parses_paragraph_declaration() {
+fn parses_declare_paragraph() {
     assert_eq!(
-        paragraph_declaration("I learned how to fly."),
+        declare_paragraph("I learned how to fly."),
         Ok(("", ("how to fly", None, vec![])))
     );
     assert_eq!(
-        paragraph_declaration("I learned to say hello with a number:"),
+        declare_paragraph("I learned to say hello with a number:"),
         Ok(("", ("to say hello", Some(Number), vec![])))
     );
     assert_eq!(
-        paragraph_declaration("I learned to make friends with a phrase using the number of elements of harmony and the word hello:"),
+        declare_paragraph("I learned to make friends with a phrase using the number of elements of harmony and the word hello:"),
         Ok(("", ("to make friends", Some(Chars), vec![Arg(Number, "of elements of harmony"), Arg(Chars, "hello")])))
     );
 }
@@ -1120,6 +1141,8 @@ fn parses_report() {
         Today I learned how to fly:
             I said \"Fly!\"!
         That's all about how to fly!
+
+        Did you know that I had 100 (apples)?
     Your faithful student: Twilight Sparkle.
 
     P.S. This is ignored"
@@ -1128,14 +1151,22 @@ fn parses_report() {
             "",
             Report {
                 name: "An example letter",
-                paragraphs: vec![Paragraph {
-                    name: "how to fly",
-                    closing_name: "how to fly",
-                    mane: true,
-                    args: vec![],
-                    return_type: None,
-                    statements: vec![Statement::Print(Expr::Lit(Literal::Chars("Fly!")))],
-                }],
+                declarations: vec![
+                    Declaration::Paragraph(Paragraph {
+                        name: "how to fly",
+                        closing_name: "how to fly",
+                        mane: true,
+                        args: vec![],
+                        return_type: None,
+                        statements: vec![Statement::Print(Expr::Lit(Literal::Chars("Fly!")))],
+                    }),
+                    Declaration::Var(DeclareVar(
+                        Variable("I"),
+                        None,
+                        Some(Expr::Lit(Literal::Number(100f64))),
+                        false
+                    ))
+                ],
                 writer: " Twilight Sparkle",
             }
         ))
@@ -1471,36 +1502,36 @@ fn parses_declare_statement() {
         statement("Did you know that the elements of harmony count is a number?"),
         Ok((
             "",
-            Statement::Declare(
+            Statement::Declare(DeclareVar(
                 Variable("the elements of harmony count"),
                 Some(Number),
                 None,
                 false,
-            )
+            ))
         ))
     );
     assert_eq!(
         statement("Did you know that Applejack's hat has the name \"Talluah\"?"),
         Ok((
             "",
-            Statement::Declare(
+            Statement::Declare(DeclareVar(
                 Variable("Applejack's hat"),
                 Some(Chars),
                 Some(Expr::Lit(Literal::Chars("Talluah"))),
                 false,
-            )
+            ))
         ))
     );
     assert_eq!(
         statement("Did you know that Pinkie Pie always is right?"),
         Ok((
             "",
-            Statement::Declare(
+            Statement::Declare(DeclareVar(
                 Variable("Pinkie Pie"),
                 None,
                 Some(Expr::Lit(Literal::Boolean(true))),
                 true,
-            )
+            ))
         ))
     );
 }

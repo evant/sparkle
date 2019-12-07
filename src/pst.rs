@@ -13,7 +13,7 @@ pub struct Paragraph<'a> {
 #[derive(Debug, PartialEq)]
 pub enum Statement<'a> {
     Print(Expr<'a>),
-    Declare(Variable<'a>, Option<Type>, Option<Expr<'a>>, bool),
+    Declare(DeclareVar<'a>),
     Assign(Variable<'a>, Expr<'a>),
     Increment(Variable<'a>),
     Decrement(Variable<'a>),
@@ -24,9 +24,18 @@ pub enum Statement<'a> {
 }
 
 #[derive(Debug, PartialEq)]
+pub struct DeclareVar<'a>(pub Variable<'a>, pub Option<Type>, pub Option<Expr<'a>>, pub bool);
+
+#[derive(Debug, PartialEq)]
+pub enum Declaration<'a> {
+    Paragraph(Paragraph<'a>),
+    Var(DeclareVar<'a>),
+}
+
+#[derive(Debug, PartialEq)]
 pub struct Report<'a> {
     pub name: &'a str,
-    pub paragraphs: Vec<Paragraph<'a>>,
+    pub declarations: Vec<Declaration<'a>>,
     pub writer: &'a str,
 }
 

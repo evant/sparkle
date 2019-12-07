@@ -13,7 +13,9 @@ use target_lexicon::{OperatingSystem, Triple};
 
 use crate::error::ReportError;
 use crate::pst;
-use crate::pst::{Arg, BinOperator, Call, Expr, Literal, Paragraph, Report, Statement};
+use crate::pst::{
+    Arg, BinOperator, Call, Declaration, DeclareVar, Expr, Literal, Paragraph, Report, Statement,
+};
 use crate::types::Type::{Boolean, Chars, Number};
 use crate::vars::{Callable, Callables};
 
@@ -209,18 +211,58 @@ fn send<'a, B: Backend>(
     context: &mut Context,
     mut f: impl FnMut(&Sender<B>, &Context) -> ReportResult<()>,
 ) -> ReportResult<FuncId> {
-    send_globals(report, sender, globals)?;
-    let mane_paragraphs = send_paragraphs(&report.paragraphs, sender, globals, context, &mut f)?;
-    let id = send_mane(&mane_paragraphs, sender, context, &mut f)?;
+    send_constants(sender)?;
+
+    let mut mane_paragraphs: Vec<FuncId> = vec![];
+    let mut declared_paragraphs: Vec<(FuncId, &Paragraph)> = vec![];
+
+    let sig = sender.module.make_signature();
+    let init_globals = sender
+        .module
+        .declare_function("init_globals", Linkage::Local, &sig)?;
+
+    let mut builder_context = FunctionBuilderContext::new();
+    let builder = FunctionBuilder::new(&mut context.func, &mut builder_context);
+    let mut function_sender = FunctionSender::new(builder);
+    let entry_ebb = function_sender.builder.create_ebb();
+    function_sender.builder.switch_to_block(entry_ebb);
+    function_sender.builder.seal_block(entry_ebb);
+
+    for declaration in &report.declarations {
+        match declaration {
+            Declaration::Paragraph(paragraph) => {
+                let id = declare_paragraph(paragraph, sender)?;
+                let arg_types = paragraph.args.iter().map(|Arg(type_, _)| *type_).collect();
+                globals.insert(
+                    paragraph.name,
+                    Callable::Func(paragraph.return_type, arg_types, id),
+                );
+                declared_paragraphs.push((id, paragraph));
+                if paragraph.mane {
+                    mane_paragraphs.push(id);
+                }
+            }
+            Declaration::Var(declare_var) => {
+                send_declare_global(declare_var, sender, globals, &mut function_sender)?;
+            }
+        }
+    }
+
+    function_sender.builder.ins().return_(&[]);
+    sender.module.define_function(init_globals, context)?;
+    f(sender, context)?;
+    sender.module.clear_context(context);
+
+    for (id, paragraph) in declared_paragraphs {
+        send_paragraph(paragraph, id, sender, globals, context, &mut f)?;
+    }
+
+    let id = send_mane(&mane_paragraphs, init_globals, sender, context, &mut f)?;
 
     Ok(id)
 }
 
-fn send_globals<'a, B: Backend>(
-    _report: &Report,
-    sender: &mut Sender<B>,
-    _globals: &mut Callables,
-) -> ReportResult<()> {
+fn send_constants<'a, B: Backend>(sender: &mut Sender<B>) -> ReportResult<()> {
     // constant strings for printing booleans
     create_constant_string("yes", sender)?;
     create_constant_string("no", sender)?;
@@ -230,38 +272,32 @@ fn send_globals<'a, B: Backend>(
     Ok(())
 }
 
-fn send_paragraphs<'a, B: Backend>(
-    paragraphs: &[Paragraph<'a>],
+fn send_declare_global<'a, B: Backend>(
+    declare_var: &DeclareVar<'a>,
     sender: &mut Sender<B>,
     globals: &mut Callables<'a>,
-    context: &mut Context,
-    mut f: impl FnMut(&Sender<B>, &Context) -> ReportResult<()>,
-) -> ReportResult<Vec<FuncId>> {
-    let mut mane_paragraphs: Vec<FuncId> = vec![];
-    let mut declared_paragraphs: Vec<(FuncId, &Paragraph)> = vec![];
+    function_sender: &mut FunctionSender,
+) -> ReportResult<()> {
+    let DeclareVar(pst::Variable(name), type_, expr, is_const) = declare_var;
+    let (type_, value) = send_init_variable(*type_, expr, sender, globals, function_sender)?;
 
-    for paragraph in paragraphs {
-        let id = declare_paragraph(paragraph, sender)?;
-        let arg_types = paragraph.args.iter().map(|Arg(type_, _)| *type_).collect();
-        globals.insert(
-            paragraph.name,
-            Callable::Func(paragraph.return_type, arg_types, id),
-        );
-        declared_paragraphs.push((id, paragraph));
-        if paragraph.mane {
-            mane_paragraphs.push(id);
-        }
-    }
+    sender
+        .data_context
+        .define_zeroinit(ir_type(sender.pointer_type, type_).bytes() as usize);
+    let id = sender
+        .module
+        .declare_data(name, Linkage::Local, !*is_const, Option::None)?;
+    sender.module.define_data(id, &sender.data_context)?;
+    sender.data_context.clear();
 
-    for (id, paragraph) in declared_paragraphs {
-        send_paragraph(paragraph, id, sender, globals, context, &mut f)?;
-    }
+    globals.insert(name, Callable::Global(type_, id, *is_const));
 
-    Ok(mane_paragraphs)
+    Ok(())
 }
 
 fn send_mane<'a, B: Backend>(
     mane_paragraphs: &[FuncId],
+    init_globals: FuncId,
     sender: &mut Sender<B>,
     context: &mut Context,
     f: &mut impl FnMut(&Sender<B>, &Context) -> ReportResult<()>,
@@ -283,6 +319,11 @@ fn send_mane<'a, B: Backend>(
         .append_ebb_params_for_function_params(entry_ebb);
     function_sender.builder.switch_to_block(entry_ebb);
     function_sender.builder.seal_block(entry_ebb);
+
+    let local_callee = sender
+        .module
+        .declare_func_in_func(init_globals, function_sender.builder.func);
+    function_sender.builder.ins().call(local_callee, &[]);
 
     for func_id in mane_paragraphs {
         let local_callee = sender
@@ -406,14 +447,14 @@ fn send_statement<'a, B: Backend>(
 ) -> ReportResult<()> {
     match statement {
         Statement::Print(expr) => send_print_statement(expr, sender, vars, function_sender),
-        Statement::Declare(var, type_, expr, is_const) => {
+        Statement::Declare(DeclareVar(var, type_, expr, is_const)) => {
             send_declare_statement(var, *type_, expr, *is_const, sender, vars, function_sender)
         }
         Statement::Assign(var, expr) => {
             send_assign_statement(var, expr, sender, vars, function_sender)
         }
-        Statement::Increment(var) => send_increment_statement(var, vars, function_sender),
-        Statement::Decrement(var) => send_decrement_statement(var, vars, function_sender),
+        Statement::Increment(var) => send_increment_statement(var, vars, sender, function_sender),
+        Statement::Decrement(var) => send_decrement_statement(var, vars, sender, function_sender),
         Statement::If(cond, if_, else_) => {
             send_if_else(cond, if_, else_, return_type, sender, vars, function_sender)
         }
@@ -478,6 +519,26 @@ fn send_declare_statement<'a, 'b, B: Backend>(
     function_sender: &mut FunctionSender,
 ) -> ReportResult<()> {
     let pst::Variable(name) = var;
+    let (type_, value) = send_init_variable(type_, expr, sender, vars, function_sender)?;
+
+    let var = vars.new_variable();
+    vars.insert(name, Callable::Var(type_, var, is_const));
+
+    function_sender
+        .builder
+        .declare_var(var, ir_type(sender.pointer_type, type_));
+    function_sender.builder.def_var(var, value);
+
+    Ok(())
+}
+
+fn send_init_variable<'a, B: Backend>(
+    type_: Option<crate::types::Type>,
+    expr: &Option<Expr<'a>>,
+    sender: &mut Sender<B>,
+    vars: &mut Callables<'a>,
+    function_sender: &mut FunctionSender,
+) -> ReportResult<(crate::types::Type, Value)> {
     let (type_, value) = match (type_, expr) {
         (Some(type_), Some(expr)) => {
             let (expr_type, value) = send_expression(expr, sender, vars, function_sender)?;
@@ -499,16 +560,7 @@ fn send_declare_statement<'a, 'b, B: Backend>(
             ))
         }
     };
-
-    let var = vars.new_variable();
-    vars.insert(name, Callable::Var(type_, var, is_const));
-
-    function_sender
-        .builder
-        .declare_var(var, ir_type(sender.pointer_type, type_));
-    function_sender.builder.def_var(var, value);
-
-    Ok(())
+    Ok((type_, value))
 }
 
 fn send_assign_statement<'a, B: Backend>(
@@ -520,34 +572,48 @@ fn send_assign_statement<'a, B: Backend>(
 ) -> ReportResult<()> {
     let pst::Variable(name) = var;
     let (expr_type, expr_value) = send_expression(expr, sender, vars, function_sender)?;
-    let (type_, var, is_const) = match vars.get(name)? {
-        Callable::Arg(_, _) => {
-            return Err(ReportError::TypeError(format!(
-                "Sorry, you can't assign to an argument '{}",
-                name
-            )));
-        }
-        Callable::Var(type_, var, is_const) => (type_, var, is_const),
-        Callable::Func(_, _, _) => {
-            return Err(ReportError::TypeError(format!(
-                "Sorry, you can't assign to a paragraph '{}'",
-                name
-            )));
-        }
-    };
-
-    if *is_const {
-        return Err(ReportError::TypeError(format!(
-            "Nopony can change what is always true: '{}'",
+    match vars.get(name)? {
+        Callable::Arg(_, _) => Err(ReportError::TypeError(format!(
+            "Sorry, you can't assign to an argument '{}",
             name
-        )));
+        ))),
+        Callable::Var(type_, var, is_const) => {
+            type_.check(expr_type)?;
+            if *is_const {
+                return Err(ReportError::TypeError(format!(
+                    "Nopony can change what is always true: '{}'",
+                    name
+                )));
+            }
+            function_sender.builder.def_var(*var, expr_value);
+            Ok(())
+        }
+        Callable::Func(_, _, _) => Err(ReportError::TypeError(format!(
+            "Sorry, you can't assign to a paragraph '{}'",
+            name
+        ))),
+        Callable::Global(type_, id, is_const) => {
+            type_.check(expr_type)?;
+            if *is_const {
+                return Err(ReportError::TypeError(format!(
+                    "Nopony can change what is always true: '{}'",
+                    name
+                )));
+            }
+            let local_id = sender
+                .module
+                .declare_data_in_func(*id, function_sender.builder.func);
+            let addr = function_sender
+                .builder
+                .ins()
+                .global_value(sender.pointer_type, local_id);
+            function_sender
+                .builder
+                .ins()
+                .store(MemFlags::new(), expr_value, addr, 0);
+            Ok(())
+        }
     }
-
-    type_.check(expr_type)?;
-
-    function_sender.builder.def_var(*var, expr_value);
-
-    Ok(())
 }
 
 fn send_if_else<'a, B: Backend>(
@@ -679,6 +745,28 @@ fn send_call<B: Backend>(
                 }
             }
         }
+        Callable::Global(type_, id, _) => {
+            if args.is_empty() {
+                let local_id = sender
+                    .module
+                    .declare_data_in_func(*id, function_sender.builder.func);
+                let ir_type = ir_type(sender.pointer_type, *type_);
+                let addr = function_sender
+                    .builder
+                    .ins()
+                    .global_value(sender.pointer_type, local_id);
+                let value = function_sender
+                    .builder
+                    .ins()
+                    .load(ir_type, MemFlags::new(), addr, 0);
+                Ok(Some((*type_, value)))
+            } else {
+                Err(ReportError::TypeError(format!(
+                    "Sorry, you can't call a variable: '{}'",
+                    name
+                )))
+            }
+        }
     }
 }
 
@@ -701,64 +789,93 @@ fn send_return<B: Backend>(
     Ok(())
 }
 
-fn send_increment_statement(
+fn send_increment_statement<B: Backend>(
     var: &pst::Variable,
     vars: &Callables,
+    sender: &mut Sender<B>,
     function_sender: &mut FunctionSender,
 ) -> ReportResult<()> {
-    send_update_statement(var, vars, function_sender, |builder, value| {
+    send_update_statement(var, vars, sender, function_sender, |builder, value| {
         let one = builder.ins().f64const(1f64);
         builder.ins().fadd(value, one)
     })
 }
 
-fn send_decrement_statement(
+fn send_decrement_statement<B: Backend>(
     var: &pst::Variable,
     vars: &Callables,
+    sender: &mut Sender<B>,
     function_sender: &mut FunctionSender,
 ) -> ReportResult<()> {
-    send_update_statement(var, vars, function_sender, |builder, value| {
+    send_update_statement(var, vars, sender, function_sender, |builder, value| {
         let one = builder.ins().f64const(1f64);
         builder.ins().fsub(value, one)
     })
 }
 
-fn send_update_statement<'a, 'b>(
+fn send_update_statement<'a, 'b, B: Backend>(
     var: &pst::Variable,
     vars: &Callables,
+    sender: &mut Sender<B>,
     function_sender: &mut FunctionSender<'b>,
     f: impl FnOnce(&mut FunctionBuilder<'b>, Value) -> Value,
 ) -> ReportResult<()> {
     let pst::Variable(name) = var;
-    let (type_, var, is_const) = match vars.get(name)? {
-        Callable::Arg(_, _) => {
-            return Err(ReportError::TypeError(format!(
-                "Sorry, you can't assign to an argument '{}'",
-                name
-            )))
-        }
-        Callable::Var(type_, slot, is_const) => (type_, slot, is_const),
-        Callable::Func(_, _, _) => {
-            return Err(ReportError::TypeError(format!(
-                "Sorry, you can't assign to a paragraph '{}'",
-                name
-            )))
-        }
-    };
-    Number.check(*type_)?;
-
-    if *is_const {
-        return Err(ReportError::TypeError(format!(
-            "Nopony can change what is always true: '{}'",
+    match vars.get(name)? {
+        Callable::Arg(_, _) => Err(ReportError::TypeError(format!(
+            "Sorry, you can't assign to an argument '{}'",
             name
-        )));
+        ))),
+        Callable::Func(_, _, _) => Err(ReportError::TypeError(format!(
+            "Sorry, you can't assign to a paragraph '{}'",
+            name
+        ))),
+        Callable::Var(type_, var, is_const) => {
+            Number.check(*type_)?;
+            if *is_const {
+                return Err(ReportError::TypeError(format!(
+                    "Nopony can change what is always true: '{}'",
+                    name
+                )));
+            }
+
+            let value = function_sender.builder.use_var(*var);
+            let new_value = f(&mut function_sender.builder, value);
+            function_sender.builder.def_var(*var, new_value);
+
+            Ok(())
+        }
+        Callable::Global(type_, id, is_const) => {
+            Number.check(*type_)?;
+            if *is_const {
+                return Err(ReportError::TypeError(format!(
+                    "Nopony can change what is always true: '{}'",
+                    name
+                )));
+            }
+
+            let ir_type = ir_type(sender.pointer_type, *type_);
+            let local_id = sender
+                .module
+                .declare_data_in_func(*id, function_sender.builder.func);
+            let addr = function_sender
+                .builder
+                .ins()
+                .global_value(sender.pointer_type, local_id);
+
+            let value = function_sender
+                .builder
+                .ins()
+                .load(ir_type, MemFlags::new(), addr, 0);
+            let new_value = f(&mut function_sender.builder, value);
+            function_sender
+                .builder
+                .ins()
+                .store(MemFlags::new(), new_value, addr, 0);
+
+            Ok(())
+        }
     }
-
-    let value = function_sender.builder.use_var(*var);
-    let new_value = f(&mut function_sender.builder, value);
-    function_sender.builder.def_var(*var, new_value);
-
-    Ok(())
 }
 
 fn send_expression<'a, B: Backend>(
@@ -1303,202 +1420,4 @@ fn ir_type(pointer_type: Type, type_: crate::types::Type) -> Type {
         // https://github.com/bytecodealliance/cranelift/issues/1117
         Boolean => types::I32,
     }
-}
-
-#[cfg(test)]
-unsafe fn gallop_first0<R: FromSparkleType>(report: &Report) -> ReportResult<impl Fn() -> R> {
-    let code = gallop_first(report)?;
-    let code = mem::transmute::<_, fn() -> R::T>(code);
-    Ok(move || R::from::<R::T>(code()))
-}
-
-#[cfg(test)]
-unsafe fn gallop_first1<A: IntoSparkleType, R: FromSparkleType>(
-    report: &Report,
-) -> ReportResult<impl Fn(A) -> R> {
-    let code = gallop_first(report)?;
-    let code = mem::transmute::<_, fn(A::T) -> R::T>(code);
-    Ok(move |a: A| R::from::<R::T>(code(a.into())))
-}
-
-#[cfg(test)]
-unsafe fn gallop_first2<A1: IntoSparkleType, A2: IntoSparkleType, R: FromSparkleType>(
-    report: &Report,
-) -> ReportResult<impl Fn(A1, A2) -> R> {
-    let code = gallop_first(report)?;
-    let code = mem::transmute::<_, fn(A1::T, A2::T) -> R::T>(code);
-    Ok(move |a1: A1, a2: A2| R::from::<R::T>(code(a1.into(), a2.into())))
-}
-
-#[cfg(test)]
-fn gallop_first(report: &Report) -> ReportResult<*const u8> {
-    let mut sender = simple_jit_sender(crate::TARGET_HOST)?;
-    let mut globals = Callables::new();
-    let mut context = sender.module.make_context();
-
-    send_globals(report, &mut sender, &mut globals)?;
-    let mane_paragraphs = send_paragraphs(
-        &report.paragraphs,
-        &mut sender,
-        &mut globals,
-        &mut context,
-        |_, _| Ok(()),
-    )?;
-
-    let id = mane_paragraphs[0];
-    sender.finalize(&mut context);
-
-    Ok(sender.module.get_finalized_function(id))
-}
-
-#[test]
-fn ands_two_booleans() -> ReportResult<()> {
-    let result = unsafe {
-        gallop_first2::<bool, bool, bool>(&Report {
-            name: "how to do some logic",
-            paragraphs: vec![Paragraph {
-                name: "logic",
-                closing_name: "logic",
-                mane: true,
-                args: vec![Arg(Boolean, "a"), Arg(Boolean, "b")],
-                return_type: Some(Boolean),
-                statements: vec![Statement::Return(Expr::BinOp(
-                    BinOperator::AddOrAnd,
-                    Box::new(Expr::Call(Call("a", vec![]))),
-                    Box::new(Expr::Call(Call("b", vec![]))),
-                ))],
-            }],
-            writer: "",
-        })?
-    };
-
-    assert_eq!(result(true, true), true);
-    assert_eq!(result(true, false), false);
-    assert_eq!(result(false, true), false);
-    assert_eq!(result(false, false), false);
-
-    Ok(())
-}
-
-#[test]
-fn adds_two_numbers() -> ReportResult<()> {
-    let result = unsafe {
-        gallop_first2::<f64, f64, f64>(&Report {
-            name: "how to do some math",
-            paragraphs: vec![Paragraph {
-                name: "math",
-                closing_name: "math",
-                mane: true,
-                args: vec![Arg(Number, "x"), Arg(Number, "y")],
-                return_type: Some(Number),
-                statements: vec![Statement::Return(Expr::BinOp(
-                    BinOperator::AddOrAnd,
-                    Box::new(Expr::Call(Call("x", vec![]))),
-                    Box::new(Expr::Call(Call("y", vec![]))),
-                ))],
-            }],
-            writer: "",
-        })?
-    };
-
-    assert_eq!(result(1f64, 2f64), 3f64);
-    assert_eq!(result(4f64, 5f64), 9f64);
-
-    Ok(())
-}
-
-#[test]
-fn concatenates_two_constant_strings() -> ReportResult<()> {
-    let result = unsafe {
-        gallop_first2::<&str, &str, String>(&Report {
-            name: "how to join together",
-            paragraphs: vec![Paragraph {
-                name: "join",
-                closing_name: "join",
-                mane: true,
-                args: vec![Arg(Chars, "first"), Arg(Chars, "second")],
-                return_type: Some(Chars),
-                statements: vec![Statement::Return(Expr::Concat(vec![
-                    Expr::Call(Call("first", vec![])),
-                    Expr::Call(Call("second", vec![])),
-                ]))],
-            }],
-            writer: "",
-        })?
-    };
-
-    assert_eq!(result("friendship is ", "magic"), "friendship is magic");
-
-    Ok(())
-}
-
-#[test]
-fn returns_allocated_string_from_paragraph() -> ReportResult<()> {
-    let result = unsafe {
-        gallop_first1::<&str, String>(&Report {
-            name: "how to cheer",
-            paragraphs: vec![
-                Paragraph {
-                    name: "test",
-                    closing_name: "test",
-                    mane: true,
-                    args: vec![Arg(Chars, "cheer")],
-                    return_type: Some(Chars),
-                    statements: vec![Statement::Return(Expr::Call(Call(
-                        "louder",
-                        vec![Expr::Call(Call(
-                            "louder",
-                            vec![Expr::Call(Call("cheer", vec![]))],
-                        ))],
-                    )))],
-                },
-                Paragraph {
-                    name: "louder",
-                    closing_name: "louder",
-                    mane: false,
-                    args: vec![Arg(Chars, "cheer")],
-                    return_type: Some(Chars),
-                    statements: vec![Statement::Return(Expr::Concat(vec![
-                        Expr::Call(Call("cheer", vec![])),
-                        Expr::Lit(Literal::Chars("!")),
-                    ]))],
-                },
-            ],
-            writer: "",
-        })?
-    };
-
-    assert_eq!(result("yay"), "yay!!");
-
-    Ok(())
-}
-
-#[test]
-fn returns_correct_comparison() -> ReportResult<()> {
-    let less_than = unsafe {
-        gallop_first2::<f64, f64, bool>(&Report {
-            name: "comparing apples",
-            paragraphs: vec![Paragraph {
-                name: "test",
-                closing_name: "test",
-                mane: true,
-                args: vec![
-                    Arg(Number, "Applejack's apples"),
-                    Arg(Number, "apples on the tree"),
-                ],
-                return_type: Some(Boolean),
-                statements: vec![Statement::Return(Expr::BinOp(
-                    BinOperator::LessThan,
-                    Box::new(Expr::Call(Call("Applejack's apples", vec![]))),
-                    Box::new(Expr::Call(Call("apples on the tree", vec![]))),
-                ))],
-            }],
-            writer: "",
-        })?
-    };
-
-    assert_eq!(less_than(10f64, 100f64), true);
-    assert_eq!(less_than(100f64, 10f64), false);
-
-    Ok(())
 }

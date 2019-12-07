@@ -1,6 +1,6 @@
 use crate::error::ReportError;
 use crate::types::Type;
-use cranelift_module::FuncId;
+use cranelift_module::{FuncId, DataId};
 use std::collections::HashMap;
 use cranelift::prelude::{Value, Variable, EntityRef};
 
@@ -13,6 +13,7 @@ pub struct Callables<'a> {
 pub enum Callable {
     Arg(Type, Value),
     Var(Type, Variable, bool),
+    Global(Type, DataId, bool),
     Func(Option<Type>, Vec<Type>, FuncId),
 }
 
