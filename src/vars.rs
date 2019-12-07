@@ -1,18 +1,18 @@
 use crate::error::ReportError;
 use crate::types::Type;
-use cranelift::codegen::ir::StackSlot;
 use cranelift_module::FuncId;
 use std::collections::HashMap;
-use cranelift::prelude::Value;
+use cranelift::prelude::{Value, Variable, EntityRef};
 
 pub struct Callables<'a> {
     parent: Option<Box<&'a Callables<'a>>>,
     values: HashMap<&'a str, Callable>,
+    var_index: usize,
 }
 
 pub enum Callable {
     Arg(Type, Value),
-    Var(Type, StackSlot, bool),
+    Var(Type, Variable, bool),
     Func(Option<Type>, Vec<Type>, FuncId),
 }
 
@@ -21,6 +21,7 @@ impl<'a> Callables<'a> {
         Callables {
             parent: None,
             values: HashMap::new(),
+            var_index: 0,
         }
     }
 
@@ -28,7 +29,14 @@ impl<'a> Callables<'a> {
         Callables {
             parent: Some(Box::new(self)),
             values: HashMap::new(),
+            var_index: 0,
         }
+    }
+    
+    pub fn new_variable(&mut self) -> Variable {
+        let var = Variable::new(self.var_index);
+        self.var_index += 1;
+        var
     }
 
     pub fn insert(&mut self, name: &'a str, value: Callable) {

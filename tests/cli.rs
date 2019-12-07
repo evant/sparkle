@@ -13,7 +13,7 @@ const EOL: &str = "\n";
 const EOL: &str = "\r\n";
 
 #[test]
-fn hello_canterlot() -> TestResult {
+fn hello_equestria() -> TestResult {
     let mut cmd = Command::cargo_bin("sparkle")?;
 
     cmd.arg("gallop").arg("examples/hello_equestria.fpp");

@@ -1,7 +1,7 @@
 use std::fs::File;
 
 use std::str::FromStr;
-use std::{env, io, mem};
+use std::{io, mem};
 
 use cranelift::codegen::Context;
 use cranelift::prelude::settings::{self, Configurable};
@@ -16,13 +16,13 @@ use crate::pst;
 use crate::pst::{Arg, BinOperator, Call, Expr, Literal, Paragraph, Report, Statement};
 use crate::types::Type::{Boolean, Chars, Number};
 use crate::vars::{Callable, Callables};
-use cranelift::codegen::ir::StackSlot;
+
 use cranelift_object::{ObjectBackend, ObjectBuilder, ObjectTrapCollection};
 use std::collections::HashSet;
 use std::ffi::{CStr, CString};
 use std::io::Write;
 use std::os::raw::c_char;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Command;
 
 type ReportResult<T> = Result<T, ReportError>;
@@ -46,7 +46,7 @@ pub fn send_out<'a>(report: &'a Report, name: &str, target: &str) -> ReportResul
 
     // If we are on the host system we can link.
     if target == crate::TARGET_HOST {
-        let output = if cfg!(target_os = "windows") {
+        let _output = if cfg!(target_os = "windows") {
             //TODO
             //            let tool = cc::windows_registry::find_tool(target, "link.exe").unwrap();
             //            tool.to_command()
@@ -477,6 +477,7 @@ fn send_declare_statement<'a, 'b, B: Backend>(
     vars: &mut Callables<'a>,
     function_sender: &mut FunctionSender,
 ) -> ReportResult<()> {
+    let pst::Variable(name) = var;
     let (type_, value) = match (type_, expr) {
         (Some(type_), Some(expr)) => {
             let (expr_type, value) = send_expression(expr, sender, vars, function_sender)?;
@@ -499,18 +500,13 @@ fn send_declare_statement<'a, 'b, B: Backend>(
         }
     };
 
-    let slot_size = ir_type(sender.pointer_type, type_);
+    let var = vars.new_variable();
+    vars.insert(name, Callable::Var(type_, var, is_const));
 
-    let slot = function_sender
+    function_sender
         .builder
-        .create_stack_slot(StackSlotData::new(
-            StackSlotKind::ExplicitSlot,
-            slot_size.bytes(),
-        ));
-
-    function_sender.builder.ins().stack_store(value, slot, 0);
-
-    vars.insert(var.0, Callable::Var(type_, slot, is_const));
+        .declare_var(var, ir_type(sender.pointer_type, type_));
+    function_sender.builder.def_var(var, value);
 
     Ok(())
 }
@@ -522,19 +518,20 @@ fn send_assign_statement<'a, B: Backend>(
     vars: &Callables,
     function_sender: &mut FunctionSender,
 ) -> ReportResult<()> {
+    let pst::Variable(name) = var;
     let (expr_type, expr_value) = send_expression(expr, sender, vars, function_sender)?;
-    let (type_, slot, is_const) = match vars.get(var.0)? {
+    let (type_, var, is_const) = match vars.get(name)? {
         Callable::Arg(_, _) => {
             return Err(ReportError::TypeError(format!(
                 "Sorry, you can't assign to an argument '{}",
-                var.0
+                name
             )));
         }
-        Callable::Var(type_, slot, is_const) => (type_, slot, is_const),
+        Callable::Var(type_, var, is_const) => (type_, var, is_const),
         Callable::Func(_, _, _) => {
             return Err(ReportError::TypeError(format!(
                 "Sorry, you can't assign to a paragraph '{}'",
-                var.0
+                name
             )));
         }
     };
@@ -542,15 +539,13 @@ fn send_assign_statement<'a, B: Backend>(
     if *is_const {
         return Err(ReportError::TypeError(format!(
             "Nopony can change what is always true: '{}'",
-            var.0
+            name
         )));
     }
 
     type_.check(expr_type)?;
-    function_sender
-        .builder
-        .ins()
-        .stack_store(expr_value, *slot, 0);
+
+    function_sender.builder.def_var(*var, expr_value);
 
     Ok(())
 }
@@ -649,9 +644,10 @@ fn send_call<B: Backend>(
                 )))
             }
         }
-        Callable::Var(type_, slot, _) => {
+        Callable::Var(type_, var, _) => {
             if args.is_empty() {
-                Ok(Some(send_var(*type_, *slot, sender, function_sender)))
+                let value = function_sender.builder.use_var(*var);
+                Ok(Some((*type_, value)))
             } else {
                 Err(ReportError::TypeError(format!(
                     "Sorry, you can't call a variable: '{}'",
@@ -733,18 +729,19 @@ fn send_update_statement<'a, 'b>(
     function_sender: &mut FunctionSender<'b>,
     f: impl FnOnce(&mut FunctionBuilder<'b>, Value) -> Value,
 ) -> ReportResult<()> {
-    let (type_, slot, is_const) = match vars.get(var.0)? {
+    let pst::Variable(name) = var;
+    let (type_, var, is_const) = match vars.get(name)? {
         Callable::Arg(_, _) => {
             return Err(ReportError::TypeError(format!(
                 "Sorry, you can't assign to an argument '{}'",
-                var.0
+                name
             )))
         }
         Callable::Var(type_, slot, is_const) => (type_, slot, is_const),
         Callable::Func(_, _, _) => {
             return Err(ReportError::TypeError(format!(
                 "Sorry, you can't assign to a paragraph '{}'",
-                var.0
+                name
             )))
         }
     };
@@ -753,20 +750,13 @@ fn send_update_statement<'a, 'b>(
     if *is_const {
         return Err(ReportError::TypeError(format!(
             "Nopony can change what is always true: '{}'",
-            var.0
+            name
         )));
     }
 
-    let value = function_sender
-        .builder
-        .ins()
-        .stack_load(types::F64, *slot, 0);
-
+    let value = function_sender.builder.use_var(*var);
     let new_value = f(&mut function_sender.builder, value);
-    function_sender
-        .builder
-        .ins()
-        .stack_store(new_value, *slot, 0);
+    function_sender.builder.def_var(*var, new_value);
 
     Ok(())
 }
@@ -990,29 +980,16 @@ fn send_comparison<B: Backend>(
                     .ins()
                     .fcmp(fcc, left_value, right_value);
                 function_sender.builder.ins().bint(types::I32, cmp)
-            },
+            }
             Boolean => {
                 let cmp = function_sender
                     .builder
                     .ins()
                     .icmp(icc, left_value, right_value);
                 function_sender.builder.ins().bint(types::I32, cmp)
-            },
+            }
         },
     ))
-}
-
-fn send_var<B: Backend>(
-    type_: crate::types::Type,
-    slot: StackSlot,
-    sender: &mut Sender<B>,
-    function_sender: &mut FunctionSender,
-) -> (crate::types::Type, Value) {
-    let v = function_sender
-        .builder
-        .ins()
-        .stack_load(ir_type(sender.pointer_type, type_), slot, 0);
-    (type_, v)
 }
 
 fn send_literal<'a, B: Backend>(
@@ -1516,7 +1493,7 @@ fn returns_correct_comparison() -> ReportResult<()> {
                     Box::new(Expr::Call(Call("apples on the tree", vec![]))),
                 ))],
             }],
-            writer: ""
+            writer: "",
         })?
     };
 
