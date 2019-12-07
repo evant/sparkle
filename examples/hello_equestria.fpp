@@ -1,7 +1,7 @@
-Dear Princess Celestia: I went to Canterlot!
+Dear Princess Celestia: I learned to talk!
 
 Today I learned how to say hello:
-I said "Hello, Canterlot!".
+I said "Hello, Equestria!".
 That's all about how to say hello.
 
 Your faithful student: Twilight Sparkle.

@@ -16,13 +16,13 @@ const EOL: &str = "\r\n";
 fn hello_canterlot() -> TestResult {
     let mut cmd = Command::cargo_bin("sparkle")?;
 
-    cmd.arg("gallop").arg("examples/hello_canterlot.fpp");
+    cmd.arg("gallop").arg("examples/hello_equestria.fpp");
 
     let out = cmd.output().unwrap().stdout;
 
     cmd.assert()
         .success()
-        .stdout("Hello, Canterlot!\n".replace("\n", EOL));
+        .stdout("Hello, Equestria!\n".replace("\n", EOL));
 
     Ok(())
 }
@@ -145,7 +145,7 @@ fn comparisons() -> TestResult {
 fn sends_hello_canterlot() -> TestResult {
     let mut cmd = Command::cargo_bin("sparkle")?;
 
-    cmd.arg("send").arg("examples/hello_canterlot.fpp");
+    cmd.arg("send").arg("examples/hello_equestria.fpp");
 
     cmd.assert().success();
 
@@ -155,19 +155,19 @@ fn sends_hello_canterlot() -> TestResult {
 
         build.assert().success();
 
-        Command::new("hello_canterlot.exe")
+        Command::new("hello_equestria.exe")
     } else {
         let mut build = Command::new("./canter.sh");
 
         build.assert().success();
 
-        Command::new("./hello_canterlot")
+        Command::new("./hello_equestria")
     };
 
     report_cmd
         .assert()
         .success()
-        .stdout("Hello, Canterlot!".to_string() + EOL);
+        .stdout("Hello, Equestria!".to_string() + EOL);
 
     Ok(())
 }
