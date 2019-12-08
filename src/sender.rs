@@ -29,7 +29,7 @@ use std::process::Command;
 
 type ReportResult<T> = Result<T, ReportError>;
 
-pub fn send_out<'a>(report: &'a Report, name: &str, target: &str) -> ReportResult<()> {
+pub fn send_out<'a>(report: &'a Report, name: &str, target: &str) -> ReportResult<String> {
     let mut sender = object_sender(name, target)?;
     let mut globals = Callables::new();
     let mut context = sender.module.make_context();
@@ -46,29 +46,7 @@ pub fn send_out<'a>(report: &'a Report, name: &str, target: &str) -> ReportResul
     file.write(&product.emit().unwrap())
         .expect("error writing to file");
 
-    // If we are on the host system we can link.
-    if target == crate::TARGET_HOST {
-        let _output = if cfg!(target_os = "windows") {
-            //TODO
-            //            let tool = cc::windows_registry::find_tool(target, "link.exe").unwrap();
-            //            tool.to_command()
-            //                .arg(path_name)
-            //                .arg("ucrt.lib")
-            //                .arg("/entry:main")
-            //                .output().unwrap()
-        } else {
-            let output = Command::new("cc")
-                .arg(path_name)
-                .arg("-o")
-                .arg(name)
-                .output()
-                .unwrap();
-            io::stdout().write_all(&output.stdout).unwrap();
-            io::stderr().write_all(&output.stderr).unwrap();
-        };
-    }
-
-    Ok(())
+    Ok(path_name)
 }
 
 pub fn gallop_mane(report: &Report, target: &str) -> ReportResult<()> {

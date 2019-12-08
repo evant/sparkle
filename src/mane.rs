@@ -4,6 +4,8 @@ use std::error::Error;
 use std::fs::read_to_string;
 use std::path::Path;
 use std::process::exit;
+use std::io;
+use std::io::Write;
 
 mod error;
 mod pst;
@@ -122,6 +124,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     match cmd {
         Command::Send => {
+            let mut should_link = false;
             let target = if args.len() == 4 {
                 match args[2].borrow() {
                     "to" => match args[3].borrow() {
@@ -140,9 +143,31 @@ fn main() -> Result<(), Box<dyn Error>> {
                     }
                 }
             } else {
+                should_link = true;
                 TARGET_HOST
             };
-            sender::send_out(&ast, name, target)?
+            let path_name = sender::send_out(&ast, name, target)?;
+
+            if should_link {
+                let _output = if cfg!(target_os = "windows") {
+                    //TODO
+                    //            let tool = cc::windows_registry::find_tool(target, "link.exe").unwrap();
+                    //            tool.to_command()
+                    //                .arg(path_name)
+                    //                .arg("ucrt.lib")
+                    //                .arg("/entry:main")
+                    //                .output().unwrap()
+                } else {
+                    let output = std::process::Command::new("cc")
+                        .arg(path_name)
+                        .arg("-o")
+                        .arg(name)
+                        .output()
+                        .unwrap();
+                    io::stdout().write_all(&output.stdout).unwrap();
+                    io::stderr().write_all(&output.stderr).unwrap();
+                };
+            }
         }
         Command::Gallop => sender::gallop_mane(&ast, TARGET_HOST)?,
         Command::Proofread => sender::proofread(&ast, TARGET_HOST)?,
