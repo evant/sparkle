@@ -938,9 +938,13 @@ fn false_(s: &str) -> ReadResult<Literal> {
 }
 
 fn string(s: &str) -> ReadResult<Literal> {
-    map(delimited(is_a("\""), is_not("\""), is_a("\"")), |s| {
-        Literal::Chars(s)
-    })(s)
+    alt((
+        // is_not fails on empty string, so special-case that.
+        map(tag("\"\""), |_| Literal::Chars("")),
+        map(delimited(is_a("\""), is_not("\""), is_a("\"")), |s| {
+            Literal::Chars(s)
+        }),
+    ))(s)
 }
 
 fn number(s: &str) -> ReadResult<Literal> {
@@ -1494,6 +1498,16 @@ fn parses_print_statement() {
             ]))
         ))
     );
+    assert_eq!(
+        statement("I said Tantabus\"\"!"),
+        Ok((
+            "",
+            Statement::Print(Expr::Concat(vec![
+                Expr::Call(Call("Tantabus", vec![])),
+                Expr::Lit(Literal::Chars(""))
+            ]))
+        ))
+    )
 }
 
 #[test]

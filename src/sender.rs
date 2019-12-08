@@ -26,6 +26,7 @@ use std::io::Write;
 use std::os::raw::c_char;
 use std::path::Path;
 use std::process::Command;
+use nom::number::complete::be_u8;
 
 type ReportResult<T> = Result<T, ReportError>;
 
@@ -263,12 +264,13 @@ fn send<'a, B: Backend>(
 }
 
 fn send_constants<'a, B: Backend>(sender: &mut Sender<B>) -> ReportResult<()> {
-    // constant strings for printing booleans
+    // for printing booleans
     create_constant_string("yes", sender)?;
     create_constant_string("no", sender)?;
-    // constant string for formatting numbers
+    // for printing 'nothing'
+    create_constant_string("nothing", sender)?;
+    // for formatting numbers
     create_constant_string("%g", sender)?;
-
     Ok(())
 }
 
@@ -478,7 +480,18 @@ fn send_print_statement<'a, B: Backend>(
     let (type_, value) = send_expression(expr, sender, vars, function_sender)?;
 
     let value = match type_ {
-        crate::types::Type::Chars => value,
+        crate::types::Type::Chars => {
+            // If this is a null pointer, we need to print 'nothing' instead.
+            let merge_block = function_sender.builder.create_ebb();
+            function_sender.builder.append_ebb_param(merge_block, sender.pointer_type);
+            let res = function_sender.builder.ins().icmp_imm(IntCC::Equal, value, 0);
+            function_sender.builder.ins().brz(res, merge_block, &[value]);
+            let nothing = reference_constant_string("nothing", sender, &mut function_sender.builder)?;
+            function_sender.builder.ins().jump(merge_block, &[nothing]);
+            function_sender.builder.switch_to_block(merge_block);
+            function_sender.builder.seal_block(merge_block);
+            function_sender.builder.ebb_params(merge_block)[0]
+        },
         crate::types::Type::Number => {
             // convert to string
             let slot = function_sender
@@ -495,6 +508,12 @@ fn send_print_statement<'a, B: Backend>(
         crate::types::Type::Boolean => bool_to_string(value, sender, &mut function_sender.builder)?,
     };
 
+    print(value, sender, &mut function_sender.builder)?;
+
+    Ok(())
+}
+
+fn print<B: Backend>(value: Value, sender: &mut Sender<B>, builder: &mut FunctionBuilder) -> ReportResult<()> {
     let mut sig = sender.module.make_signature();
     sig.params.push(AbiParam::new(sender.pointer_type));
     let callee = sender
@@ -502,9 +521,9 @@ fn send_print_statement<'a, B: Backend>(
         .declare_function("puts", Linkage::Import, &sig)?;
     let local_callee = sender
         .module
-        .declare_func_in_func(callee, function_sender.builder.func);
+        .declare_func_in_func(callee, builder.func);
 
-    let _call = function_sender.builder.ins().call(local_callee, &[value]);
+    let _call = builder.ins().call(local_callee, &[value]);
 
     Ok(())
 }
@@ -547,7 +566,7 @@ fn send_init_variable<'a, B: Backend>(
         }
         (Some(type_), None) => match type_ {
             Chars => {
-                let value = function_sender.builder.ins().null(sender.pointer_type);
+                let value = function_sender.builder.ins().iconst(sender.pointer_type, 0);
                 (Chars, value)
             }
             Number => send_number_literal(0f64, function_sender),
@@ -1040,6 +1059,14 @@ fn send_expression<'a, B: Backend>(
             let mut buff_size = function_sender.builder.ins().iconst(sender.pointer_type, 1);
 
             for string in &strings {
+                // if source is null, throw an exception.
+                let merge_block = function_sender.builder.create_ebb();
+                function_sender.builder.ins().brnz(*string, merge_block, &[]);
+                // TODO: print a useful error.
+                function_sender.builder.ins().trap(TrapCode::User(1));
+                function_sender.builder.switch_to_block(merge_block);
+                function_sender.builder.seal_block(merge_block);
+
                 let len = strlen(*string, sender, &mut function_sender.builder)?;
                 buff_size = function_sender.builder.ins().iadd(buff_size, len);
             }
@@ -1083,6 +1110,21 @@ fn send_comparison<B: Backend>(
         Boolean,
         match type_ {
             Chars => {
+                // if source is null, throw an exception.
+                let else_block = function_sender.builder.create_ebb();
+                let merge_block = function_sender.builder.create_ebb();
+                function_sender.builder.ins().brz(left_value, else_block, &[]);
+                function_sender.builder.ins().brz(right_value, else_block, &[]);
+                function_sender.builder.ins().jump(merge_block, &[]);
+
+                function_sender.builder.switch_to_block(else_block);
+                function_sender.builder.seal_block(else_block);
+
+                // TODO: print a useful error.
+                function_sender.builder.ins().trap(TrapCode::User(1));
+                function_sender.builder.switch_to_block(merge_block);
+                function_sender.builder.seal_block(merge_block);
+
                 let result = compare_strings(
                     left_value,
                     right_value,

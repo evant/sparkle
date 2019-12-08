@@ -23,4 +23,9 @@ That's what I would do.
 I said the changeling.
 That's all about scope variables.
 
+Today I learned about uninitialized strings:
+Did you know that the Tantabus is a word?
+I said the Tantabus!
+That's all about uninitialized strings.
+
 Your faithful student: Twilight Sparkle.

@@ -101,7 +101,8 @@ fn variables() -> TestResult {
          yes\n\
          Applejack\n\
          Fluttershy\n\
-         Applejack\n"
+         Applejack\n\
+         nothing\n"
             .replace("\n", EOL),
     );
 

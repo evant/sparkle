@@ -50,7 +50,7 @@ ambiguity parsing that, much like printing. ex: `Spike's age is now 10 plus 1`.
 ## Comparision
 
 Unlike the reference, values are _not_ converted to strings if their types differ. It is a compiler error instead. You
-can do this explicilty with concatination ex: `"1" is 1 ""`.
+can do this explicitly with concatenation ex: `"1" is 1 ""`.
 
 ## Calling
 
@@ -63,3 +63,13 @@ version, use an alternate name, or assign to a variable and use that instead. ex
 
 Variable scoping isn't described at all in the reference. I went with lexical scoped variables. You may also redeclare a 
 variable at any time in the same scope and it'll shadow the previous one.
+
+## Default Values
+
+Since it's not well defined in the reference, the default values for various types are as follows:
+
+| Type    | Default Value |
+|---------|---------------|
+| string  | nothing       |
+| number  | 0             |
+| boolean | false         |
