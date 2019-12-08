@@ -7,18 +7,16 @@ Did you know that my lower bound is 0?
 Did you know that my guess is 50?
 Did you know that your answer is a word?
 Did you know that I got it is wrong?
+Did you know that the first guess is correct?
 I said "Pick a number between 0 and 100 inclusive".
 I read a placeholder.
 As long as I got it is wrong,
-I said "Is your number " my guess "? If not, please tell me if it's higher or lower.".
-I read your answer!
-When your answer is "yes",
-I said "I got it!".
-I got it is now right!
-Otherwise, When your answer is "higher",
-my lower bound is now my guess.
-Otherwise, When your answer is "lower",
-my upper bound is now my guess.
+When the first guess, I read your answer "Is your number " my guess "? If not, please tell me if it's higher or lower: ".
+the first guess is now wrong.
+Otherwise, I read your answer "Is your number " my guess "? ". That's what I would do.
+When your answer is "yes", I said "I got it!". I got it is now right!
+Otherwise, When your answer is "higher", my lower bound is now my guess.
+Otherwise, When your answer is "lower", my upper bound is now my guess.
 Otherwise, I said "Sorry, I didn't understand you. Please answer with 'yes', 'higher', or 'lower'.".
 That's what I would do, That's what I would do, That's what I would do.
 my guess is now my upper bound plus my lower bound divided by 2.

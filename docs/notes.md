@@ -78,3 +78,16 @@ Since it's not well defined in the reference, the default values for various typ
 
 Declaring literals is vague in the reference, only giving examples. I took them to mean that you can optionally include
 the type before them, ex: `a number 10` or `the logic no`.
+
+## Input
+
+The reference grammar includes the option `the next <type>` but has no examples. I decided to allow this phrase with the
+type matching how you declare a variable (without `a`/`the`). ex: `I asked Twilight the next number.` By adding this you 
+are only being explicit, it does not change the behavior of the report. The type must match the type the variable is
+declared as, or it is a compile error.
+
+For booleans, any value that can be used to declare one is valid input for parsing. ex: `yes`, `wrong`, `correct`, `false`.
+
+A prompt can be any expression, it will be evaluated and then printed before asking for input. ex
+`I asked your favorite number "Is you favorite number " guess " "?`. You may also have both `the next <type>` and a 
+prompt, if so, the former proceeds the later. ex: `I asked Applejack the next number "How many apples do you have?"`.

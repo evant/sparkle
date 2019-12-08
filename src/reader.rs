@@ -253,12 +253,13 @@ fn read_statement(s: &str) -> ReadResult<Statement> {
     map(
         preceded(
             preceded(keyword_read, whitespace1),
-            pair(
+            tuple((
                 var,
                 opt(preceded(whitespace_delim1(keyword_the_next), type_)),
-            ),
+                opt(preceded(whitespace1, expr(true)))
+            )),
         ),
-        |(var, type_)| Statement::Read(var, type_, None),
+        |(var, type_, prompt)| Statement::Read(var, type_, prompt),
     )(s)
 }
 
@@ -1752,6 +1753,28 @@ fn parses_read_statement() {
         Ok((
             "",
             Statement::Read(Variable("Twilight"), Some(Number), None)
+        ))
+    );
+    assert_eq!(
+        statement("I asked Spike \"How many gems are left?\""),
+        Ok((
+            "",
+            Statement::Read(
+                Variable("Spike"),
+                None,
+                Some(Expr::Lit(Literal::Chars("How many gems are left?")))
+            )
+        ))
+    );
+    assert_eq!(
+        statement("I asked Applejack the next number \"How many apples do you have?\""),
+        Ok((
+            "",
+            Statement::Read(
+                Variable("Applejack"),
+                Some(Number),
+                Some(Expr::Lit(Literal::Chars("How many apples do you have?")))
+            )
         ))
     );
 }

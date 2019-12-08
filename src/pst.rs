@@ -21,7 +21,7 @@ pub enum Statement<'a> {
     While(Expr<'a>, Vec<Statement<'a>>),
     Call(Call<'a>),
     Return(Expr<'a>),
-    Read(Variable<'a>, Option<Type>, Option<&'a str>),
+    Read(Variable<'a>, Option<Type>, Option<Expr<'a>>),
 }
 
 #[derive(Debug, PartialEq)]

@@ -454,7 +454,7 @@ fn send_statement<'a, B: Backend>(
     function_sender: &mut FunctionSender,
 ) -> ReportResult<()> {
     match statement {
-        Statement::Print(expr) => send_print_statement(expr, sender, vars, function_sender),
+        Statement::Print(expr) => send_print_statement(expr, true, sender, vars, function_sender),
         Statement::Read(var, type_, prompt) => {
             send_read_statement(var, type_, prompt, sender, vars, function_sender)
         }
@@ -493,6 +493,7 @@ fn send_statement<'a, B: Backend>(
 
 fn send_print_statement<'a, B: Backend>(
     expr: &Expr<'a>,
+    newline: bool,
     sender: &mut Sender<B>,
     vars: &Callables,
     function_sender: &mut FunctionSender,
@@ -537,32 +538,60 @@ fn send_print_statement<'a, B: Backend>(
         crate::types::Type::Boolean => bool_to_string(value, sender, &mut function_sender.builder)?,
     };
 
-    print(value, sender, &mut function_sender.builder)?;
+    print(value, newline, sender, &mut function_sender.builder)?;
 
     Ok(())
 }
 
 fn print<B: Backend>(
     value: Value,
+    newline: bool,
     sender: &mut Sender<B>,
     builder: &mut FunctionBuilder,
 ) -> ReportResult<()> {
-    let mut sig = sender.module.make_signature();
-    sig.params.push(AbiParam::new(sender.pointer_type));
-    let callee = sender
-        .module
-        .declare_function("puts", Linkage::Import, &sig)?;
-    let local_callee = sender.module.declare_func_in_func(callee, builder.func);
+    if newline {
+        let mut sig = sender.module.make_signature();
+        sig.params.push(AbiParam::new(sender.pointer_type));
+        let callee = sender
+            .module
+            .declare_function("puts", Linkage::Import, &sig)?;
+        let local_callee = sender.module.declare_func_in_func(callee, builder.func);
 
-    let _call = builder.ins().call(local_callee, &[value]);
+        let _call = builder.ins().call(local_callee, &[value]);
+    } else {
+        let mut sig = sender.module.make_signature();
+        sig.params.push(AbiParam::new(sender.pointer_type));
+        sig.params.push(AbiParam::new(sender.pointer_type));
+        let callee = sender
+            .module
+            .declare_function("fputs", Linkage::Import, &sig)?;
+        let local_callee = sender.module.declare_func_in_func(callee, builder.func);
 
+        let stdout_name = match sender.triple.operating_system {
+            OperatingSystem::Darwin { .. }  => "__stdoutp",
+            _ => "stdout"
+        };
+
+        let sym = sender
+            .module
+            .declare_data(stdout_name, Linkage::Import, false, None)?;
+        let local_id = sender.module.declare_data_in_func(sym, builder.func);
+        let stdout_ptr = builder
+            .ins()
+            .symbol_value(sender.module.target_config().pointer_type(), local_id);
+        let stdout = builder.ins().load(sender.pointer_type, MemFlags::new(), stdout_ptr, 0);
+
+        let call = builder
+            .ins()
+            .call(local_callee, &[value, stdout]);
+    }
     Ok(())
 }
 
 fn send_read_statement<'a, B: Backend>(
     var: &'a pst::Variable<'a>,
-    type_: &Option<crate::types::Type>,
-    prompt: &Option<&'a str>,
+    declared_type: &Option<crate::types::Type>,
+    prompt: &Option<Expr<'a>>,
     sender: &mut Sender<B>,
     vars: &mut Callables<'a>,
     function_sender: &mut FunctionSender,
@@ -573,6 +602,14 @@ fn send_read_statement<'a, B: Backend>(
         vars,
         function_sender,
         |type_, sender, vars, function_sender| {
+            if let Some(t) = declared_type {
+                type_.check(*t)?;
+            }
+
+            if let Some(expr) = prompt {
+                send_print_statement(expr, false, sender, vars, function_sender)?;
+            }
+
             let builder = &mut function_sender.builder;
 
             let line_slot = builder.create_stack_slot(StackSlotData::new(

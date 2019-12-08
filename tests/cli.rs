@@ -157,9 +157,7 @@ fn number_gusser() -> TestResult {
         .success()
         .stdout(
             "Pick a number between 0 and 100 inclusive\n\
-             Is your number 50? If not, please tell me if it's higher or lower.\n\
-             Is your number 75? If not, please tell me if it's higher or lower.\n\
-             I got it!\n"
+             Is your number 50? If not, please tell me if it's higher or lower: Is your number 75? I got it!\n"
                 .replace("\n", EOL),
         );
 
