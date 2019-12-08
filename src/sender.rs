@@ -1587,9 +1587,14 @@ fn get_line<B: Backend>(
     let zero = builder.ins().iconst(sender.pointer_type, 0);
     builder.ins().stack_store(zero, zero_slot, 0);
 
+    let stdin_name = match sender.triple.operating_system {
+        OperatingSystem::MacOSX { .. }  => "__stdinp",
+        _ => "stdin"
+    };
+
     let sym = sender
         .module
-        .declare_data("stdin", Linkage::Import, false, None)?;
+        .declare_data(stdin_name, Linkage::Import, false, None)?;
     let local_id = sender.module.declare_data_in_func(sym, builder.func);
     let stdin_ptr = builder
         .ins()
