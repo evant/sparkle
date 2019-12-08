@@ -19,7 +19,7 @@ enum Command {
 }
 
 const TARGET_LINUX: &str = "x86_64-unknown-unknown-elf";
-const TARGET_MACOS: &str = "x86_64-unknown-unknown-macho";
+const TARGET_MACOS: &str = "x86_64-apple-darwin-macho";
 const TARGET_WINDOWS: &str = "x86_64-pc-windows-msvc";
 
 #[cfg(target_os = "linux")]
