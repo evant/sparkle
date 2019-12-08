@@ -23,22 +23,38 @@ cargo build --release
 You may execute a report directly with `sparkle gallop [report]` or compile to an executable with 
 `sparkle send [report]`.
 
-
-
-### Linux/MacOS
+#### Linux/MacOS
 ```
-sparkle send examples/hello_canterlot.fpp
-./hello_canterlot
+sparkle send examples/hello_equestria.fpp
+./hello_equestria
 ```
 
-### Windows
-(Using the Visual Studio 2019 [Build Tools](https://visualstudio.microsoft.com/downloads/#build-tools-for-visual-studio-2019))
-
+#### Windows
 You currently need to link the output on windows, this is tempoary until I can figure out how to invoke the linker.
+
+(Using the Visual Studio 2019 [Build Tools](https://visualstudio.microsoft.com/downloads/#build-tools-for-visual-studio-2019))
+```
+"C:\Program Files (x86)\Microsoft Visual Studio\2019\BuildTools\VC\Auxiliary\Build\vcvarsall.bat" x64
+sparkle.exe send examples/hello_equestria.fpp
+link hello_equestria.obj ucrt.lib /entry:main
+hello_canterlot.exe
+```
+
+### Cross Compiling
+
+You may cross-compile with `spakle send [report] to [linux|macos|windows]`. This will generate an object file for the 
+given platform. You will still need to invoke that platform's linker to generate the final executable, but you won't 
+need sparkle compiled for that platform.
+
+#### Linux/MacOS
+
+```
+cc hello_equestria.o -o hello_equestria
+```
+
+#### Windows
 
 ```
 "C:\Program Files (x86)\Microsoft Visual Studio\2019\BuildTools\VC\Auxiliary\Build\vcvarsall.bat" x64
-sparkle.exe send examples/hello_canterlot.fpp
-link hello_canterlot.obj ucrt.lib /entry:main
-hello_canterlot.exe
+link hello_equestria.obj ucrt.lib /entry:main
 ```
