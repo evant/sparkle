@@ -592,7 +592,9 @@ fn send_read_statement<'a, B: Backend>(
 
             let parsed_value = match type_ {
                 Chars => line,
-                Number => unimplemented!(),
+                Number => {
+                    string_to_double(line, sender, builder)?
+                }
                 Boolean => {
                     let merge_block = builder.create_ebb();
                     builder.append_ebb_param(merge_block, types::I32);
@@ -1597,6 +1599,25 @@ fn get_line<B: Backend>(
     let call = builder
         .ins()
         .call(local_callee, &[line_ptr, zero_ptr, stdin]);
+
+    Ok(builder.inst_results(call)[0])
+}
+
+fn string_to_double<B: Backend>(string: Value, sender: &mut Sender<B>, builder: &mut FunctionBuilder) -> ReportResult<Value> {
+    let mut sig = sender.module.make_signature();
+    sig.params.push(AbiParam::new(sender.pointer_type));
+    sig.params.push(AbiParam::new(sender.pointer_type));
+    sig.returns.push(AbiParam::new(types::F64));
+
+    let callee = sender
+        .module
+        .declare_function("strtod", Linkage::Import, &sig)?;
+    let local_callee = sender.module.declare_func_in_func(callee, builder.func);
+
+    let zero = builder.ins().iconst(sender.pointer_type, 0);
+    let call = builder
+        .ins()
+        .call(local_callee, &[string, zero]);
 
     Ok(builder.inst_results(call)[0])
 }

@@ -152,10 +152,16 @@ fn number_gusser() -> TestResult {
     cmd.arg("gallop").arg("examples/number_guesser.fpp");
 
     cmd.with_stdin()
-        .buffer("hello\n")
+        .buffer("\nhigher\nyes\n")
         .assert()
         .success()
-        .stdout("hello\n".replace("\n", EOL));
+        .stdout(
+            "Pick a number between 1 and 100 inclusive\n\
+             Is your number 50? If not, please tell me if it's higher or lower.\n\
+             Is your number 75? If not, please tell me if it's higher or lower.\n\
+             I got it!\n"
+                .replace("\n", EOL),
+        );
 
     Ok(())
 }
