@@ -3,11 +3,11 @@ Dear Princess Celestia: I can guess numbers.
 Today I learned how to guess your number.
 Did you know that a placeholder is a word?
 Did you know that my upper bound is 100?
-Did you know that my lower bound is 1?
+Did you know that my lower bound is 0?
 Did you know that my guess is 50?
 Did you know that your answer is a word?
 Did you know that I got it is wrong?
-I said "Pick a number between 1 and 100 inclusive".
+I said "Pick a number between 0 and 100 inclusive".
 I read a placeholder.
 As long as I got it is wrong,
 I said "Is your number " my guess "? If not, please tell me if it's higher or lower.".

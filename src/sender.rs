@@ -580,6 +580,8 @@ fn send_read_statement<'a, B: Backend>(
                 types::I32.bytes(),
             ));
             let line_ptr = builder.ins().stack_addr(sender.pointer_type, line_slot, 0);
+            let zero = builder.ins().iconst(sender.pointer_type, 0);
+            builder.ins().stack_store(zero, line_slot, 0);
 
             let len = get_line(line_ptr, sender, builder)?;
             let line = builder.ins().load(sender.pointer_type, MemFlags::new(), line_ptr, 0);
@@ -1587,9 +1589,14 @@ fn get_line<B: Backend>(
     let zero = builder.ins().iconst(sender.pointer_type, 0);
     builder.ins().stack_store(zero, zero_slot, 0);
 
+    let stdin_name = match sender.triple.operating_system {
+        OperatingSystem::Darwin { .. }  => "__stdinp",
+        _ => "stdin"
+    };
+
     let sym = sender
         .module
-        .declare_data("stdin", Linkage::Import, false, None)?;
+        .declare_data(stdin_name, Linkage::Import, false, None)?;
     let local_id = sender.module.declare_data_in_func(sym, builder.func);
     let stdin_ptr = builder
         .ins()
