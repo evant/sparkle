@@ -21,10 +21,16 @@ pub enum Statement<'a> {
     While(Expr<'a>, Vec<Statement<'a>>),
     Call(Call<'a>),
     Return(Expr<'a>),
+    Read(Variable<'a>, Option<Type>, Option<&'a str>),
 }
 
 #[derive(Debug, PartialEq)]
-pub struct DeclareVar<'a>(pub Variable<'a>, pub Option<Type>, pub Option<Expr<'a>>, pub bool);
+pub struct DeclareVar<'a>(
+    pub Variable<'a>,
+    pub Option<Type>,
+    pub Option<Expr<'a>>,
+    pub bool,
+);
 
 #[derive(Debug, PartialEq)]
 pub enum Declaration<'a> {

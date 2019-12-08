@@ -73,3 +73,8 @@ Since it's not well defined in the reference, the default values for various typ
 | string  | nothing       |
 | number  | 0             |
 | boolean | false         |
+
+## Literals
+
+Declaring literals is vague in the reference, only giving examples. I took them to mean that you can optionally include
+the type before them, ex: `a number 10` or `the logic no`.

@@ -146,7 +146,22 @@ fn comparisons() -> TestResult {
 }
 
 #[test]
-fn sends_hello_canterlot() -> TestResult {
+fn number_gusser() -> TestResult {
+    let mut cmd = Command::cargo_bin("sparkle")?;
+
+    cmd.arg("gallop").arg("examples/number_guesser.fpp");
+
+    cmd.with_stdin()
+        .buffer("hello\n")
+        .assert()
+        .success()
+        .stdout("hello\n".replace("\n", EOL));
+
+    Ok(())
+}
+
+#[test]
+fn sends_hello_equestria() -> TestResult {
     let mut cmd = Command::cargo_bin("sparkle")?;
 
     cmd.arg("send").arg("examples/hello_equestria.fpp");

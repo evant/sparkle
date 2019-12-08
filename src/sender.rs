@@ -20,13 +20,13 @@ use crate::types::Type::{Boolean, Chars, Number};
 use crate::vars::{Callable, Callables};
 
 use cranelift_object::{ObjectBackend, ObjectBuilder, ObjectTrapCollection};
+use nom::number::complete::be_u8;
 use std::collections::HashSet;
 use std::ffi::{CStr, CString};
 use std::io::Write;
 use std::os::raw::c_char;
 use std::path::Path;
 use std::process::Command;
-use nom::number::complete::be_u8;
 
 type ReportResult<T> = Result<T, ReportError>;
 
@@ -449,6 +449,9 @@ fn send_statement<'a, B: Backend>(
 ) -> ReportResult<()> {
     match statement {
         Statement::Print(expr) => send_print_statement(expr, sender, vars, function_sender),
+        Statement::Read(var, type_, prompt) => {
+            send_read_statement(var, type_, prompt, sender, vars, function_sender)
+        }
         Statement::Declare(DeclareVar(var, type_, expr, is_const)) => {
             send_declare_statement(var, *type_, expr, *is_const, sender, vars, function_sender)
         }
@@ -457,12 +460,23 @@ fn send_statement<'a, B: Backend>(
         }
         Statement::Increment(var) => send_increment_statement(var, vars, sender, function_sender),
         Statement::Decrement(var) => send_decrement_statement(var, vars, sender, function_sender),
-        Statement::If(cond, if_, else_) => {
-            send_if_else(cond, if_, else_, return_type, sender, &mut vars.create_child(), function_sender)
-        }
-        Statement::While(cond, body) => {
-            send_while_statement(cond, body, return_type, sender, &mut vars.create_child(), function_sender)
-        }
+        Statement::If(cond, if_, else_) => send_if_else(
+            cond,
+            if_,
+            else_,
+            return_type,
+            sender,
+            &mut vars.create_child(),
+            function_sender,
+        ),
+        Statement::While(cond, body) => send_while_statement(
+            cond,
+            body,
+            return_type,
+            sender,
+            &mut vars.create_child(),
+            function_sender,
+        ),
         Statement::Call(call) => {
             send_call(call, sender, vars, function_sender)?;
             Ok(())
@@ -483,15 +497,24 @@ fn send_print_statement<'a, B: Backend>(
         crate::types::Type::Chars => {
             // If this is a null pointer, we need to print 'nothing' instead.
             let merge_block = function_sender.builder.create_ebb();
-            function_sender.builder.append_ebb_param(merge_block, sender.pointer_type);
-            let res = function_sender.builder.ins().icmp_imm(IntCC::Equal, value, 0);
-            function_sender.builder.ins().brz(res, merge_block, &[value]);
-            let nothing = reference_constant_string("nothing", sender, &mut function_sender.builder)?;
+            function_sender
+                .builder
+                .append_ebb_param(merge_block, sender.pointer_type);
+            let res = function_sender
+                .builder
+                .ins()
+                .icmp_imm(IntCC::Equal, value, 0);
+            function_sender
+                .builder
+                .ins()
+                .brz(res, merge_block, &[value]);
+            let nothing =
+                reference_constant_string("nothing", sender, &mut function_sender.builder)?;
             function_sender.builder.ins().jump(merge_block, &[nothing]);
             function_sender.builder.switch_to_block(merge_block);
             function_sender.builder.seal_block(merge_block);
             function_sender.builder.ebb_params(merge_block)[0]
-        },
+        }
         crate::types::Type::Number => {
             // convert to string
             let slot = function_sender
@@ -513,19 +536,59 @@ fn send_print_statement<'a, B: Backend>(
     Ok(())
 }
 
-fn print<B: Backend>(value: Value, sender: &mut Sender<B>, builder: &mut FunctionBuilder) -> ReportResult<()> {
+fn print<B: Backend>(
+    value: Value,
+    sender: &mut Sender<B>,
+    builder: &mut FunctionBuilder,
+) -> ReportResult<()> {
     let mut sig = sender.module.make_signature();
     sig.params.push(AbiParam::new(sender.pointer_type));
     let callee = sender
         .module
         .declare_function("puts", Linkage::Import, &sig)?;
-    let local_callee = sender
-        .module
-        .declare_func_in_func(callee, builder.func);
+    let local_callee = sender.module.declare_func_in_func(callee, builder.func);
 
     let _call = builder.ins().call(local_callee, &[value]);
 
     Ok(())
+}
+
+fn send_read_statement<'a, B: Backend>(
+    var: &'a pst::Variable<'a>,
+    type_: &Option<crate::types::Type>,
+    prompt: &Option<&'a str>,
+    sender: &mut Sender<B>,
+    vars: &mut Callables<'a>,
+    function_sender: &mut FunctionSender,
+) -> ReportResult<()> {
+    send_write_var_statement(
+        var,
+        sender,
+        vars,
+        function_sender,
+        |type_, sender, vars, function_sender| {
+            let builder = &mut function_sender.builder;
+
+            let line_slot = builder.create_stack_slot(StackSlotData::new(
+                StackSlotKind::ExplicitSlot,
+                types::I32.bytes(),
+            ));
+            let line_ptr = builder.ins().stack_addr(sender.pointer_type, line_slot, 0);
+//            let zero = builder.ins().iconst(types::I32, 0);
+//            builder.ins().store(MemFlags::new(), zero, line_ptr, 0);
+
+            let len = get_line(line_ptr, sender, builder)?;
+            let line = builder.ins().load(sender.pointer_type, MemFlags::new(), line_ptr, 0);
+            // strip off newline.
+            let one = builder.ins().iconst(types::I64, 1);
+            let newline_index = builder.ins().isub(len, one);
+            let newline_ptr = builder.ins().iadd(line, newline_index);
+            let zero = builder.ins().iconst(types::I8, 0);
+            builder.ins().store(MemFlags::new(), zero, newline_ptr, 0);
+
+            Ok((Chars, line))
+        }
+    )
 }
 
 fn send_declare_statement<'a, 'b, B: Backend>(
@@ -589,30 +652,54 @@ fn send_assign_statement<'a, B: Backend>(
     vars: &Callables,
     function_sender: &mut FunctionSender,
 ) -> ReportResult<()> {
+    send_write_var_statement(
+        var,
+        sender,
+        vars,
+        function_sender,
+        |_, sender, vars, function_sender| send_expression(expr, sender, vars, function_sender),
+    )?;
+
+    Ok(())
+}
+
+fn send_write_var_statement<'a, B: Backend>(
+    var: &pst::Variable<'a>,
+    sender: &mut Sender<B>,
+    vars: &Callables,
+    function_sender: &mut FunctionSender,
+    f: impl FnOnce(
+        crate::types::Type,
+        &mut Sender<B>,
+        &Callables,
+        &mut FunctionSender,
+    ) -> ReportResult<(crate::types::Type, Value)>,
+) -> ReportResult<()> {
     let pst::Variable(name) = var;
-    let (expr_type, expr_value) = send_expression(expr, sender, vars, function_sender)?;
     match vars.get(name)? {
         Callable::Arg(_, _) => Err(ReportError::TypeError(format!(
             "Sorry, you can't assign to an argument '{}",
             name
         ))),
+        Callable::Func(_, _, _) => Err(ReportError::TypeError(format!(
+            "Sorry, you can't assign to a paragraph '{}'",
+            name
+        ))),
         Callable::Var(type_, var, is_const) => {
-            type_.check(expr_type)?;
+            let (value_type, value) = f(*type_, sender, vars, function_sender)?;
+            type_.check(value_type)?;
             if *is_const {
                 return Err(ReportError::TypeError(format!(
                     "Nopony can change what is always true: '{}'",
                     name
                 )));
             }
-            function_sender.builder.def_var(*var, expr_value);
+            function_sender.builder.def_var(*var, value);
             Ok(())
         }
-        Callable::Func(_, _, _) => Err(ReportError::TypeError(format!(
-            "Sorry, you can't assign to a paragraph '{}'",
-            name
-        ))),
         Callable::Global(type_, id, is_const) => {
-            type_.check(expr_type)?;
+            let (value_type, value) = f(*type_, sender, vars, function_sender)?;
+            type_.check(value_type)?;
             if *is_const {
                 return Err(ReportError::TypeError(format!(
                     "Nopony can change what is always true: '{}'",
@@ -629,7 +716,7 @@ fn send_assign_statement<'a, B: Backend>(
             function_sender
                 .builder
                 .ins()
-                .store(MemFlags::new(), expr_value, addr, 0);
+                .store(MemFlags::new(), value, addr, 0);
             Ok(())
         }
     }
@@ -814,7 +901,7 @@ fn send_increment_statement<B: Backend>(
     sender: &mut Sender<B>,
     function_sender: &mut FunctionSender,
 ) -> ReportResult<()> {
-    send_update_statement(var, vars, sender, function_sender, |builder, value| {
+    send_update_var_statement(var, vars, sender, function_sender, |builder, value| {
         let one = builder.ins().f64const(1f64);
         builder.ins().fadd(value, one)
     })
@@ -826,13 +913,13 @@ fn send_decrement_statement<B: Backend>(
     sender: &mut Sender<B>,
     function_sender: &mut FunctionSender,
 ) -> ReportResult<()> {
-    send_update_statement(var, vars, sender, function_sender, |builder, value| {
+    send_update_var_statement(var, vars, sender, function_sender, |builder, value| {
         let one = builder.ins().f64const(1f64);
         builder.ins().fsub(value, one)
     })
 }
 
-fn send_update_statement<'a, 'b, B: Backend>(
+fn send_update_var_statement<'a, 'b, B: Backend>(
     var: &pst::Variable,
     vars: &Callables,
     sender: &mut Sender<B>,
@@ -1061,7 +1148,10 @@ fn send_expression<'a, B: Backend>(
             for string in &strings {
                 // if source is null, throw an exception.
                 let merge_block = function_sender.builder.create_ebb();
-                function_sender.builder.ins().brnz(*string, merge_block, &[]);
+                function_sender
+                    .builder
+                    .ins()
+                    .brnz(*string, merge_block, &[]);
                 // TODO: print a useful error.
                 function_sender.builder.ins().trap(TrapCode::User(1));
                 function_sender.builder.switch_to_block(merge_block);
@@ -1113,8 +1203,14 @@ fn send_comparison<B: Backend>(
                 // if source is null, throw an exception.
                 let else_block = function_sender.builder.create_ebb();
                 let merge_block = function_sender.builder.create_ebb();
-                function_sender.builder.ins().brz(left_value, else_block, &[]);
-                function_sender.builder.ins().brz(right_value, else_block, &[]);
+                function_sender
+                    .builder
+                    .ins()
+                    .brz(left_value, else_block, &[]);
+                function_sender
+                    .builder
+                    .ins()
+                    .brz(right_value, else_block, &[]);
                 function_sender.builder.ins().jump(merge_block, &[]);
 
                 function_sender.builder.switch_to_block(else_block);
@@ -1378,7 +1474,7 @@ fn alloc<B: Backend>(
     size: Value,
     sender: &mut Sender<B>,
     builder: &mut FunctionBuilder,
-) -> Result<Value, ReportError> {
+) -> ReportResult<Value> {
     let mut sig = sender.module.make_signature();
     sig.params.push(AbiParam::new(sender.pointer_type));
     sig.params.push(AbiParam::new(sender.pointer_type));
@@ -1399,7 +1495,7 @@ fn strlen<B: Backend>(
     string: Value,
     sender: &mut Sender<B>,
     builder: &mut FunctionBuilder,
-) -> Result<Value, ReportError> {
+) -> ReportResult<Value> {
     let mut sig = sender.module.make_signature();
     sig.params.push(AbiParam::new(sender.pointer_type));
     sig.returns.push(AbiParam::new(types::I64));
@@ -1410,6 +1506,46 @@ fn strlen<B: Backend>(
     let local_callee = sender.module.declare_func_in_func(callee, builder.func);
 
     let call = builder.ins().call(local_callee, &[string]);
+
+    Ok(builder.inst_results(call)[0])
+}
+
+fn get_line<B: Backend>(
+    line_ptr: Value,
+    sender: &mut Sender<B>,
+    builder: &mut FunctionBuilder,
+) -> ReportResult<Value> {
+    let mut sig = sender.module.make_signature();
+    sig.params.push(AbiParam::new(sender.pointer_type));
+    sig.params.push(AbiParam::new(sender.pointer_type));
+    sig.params.push(AbiParam::new(sender.pointer_type));
+    sig.returns.push(AbiParam::new(types::I64));
+
+    let callee = sender
+        .module
+        .declare_function("getline", Linkage::Import, &sig)?;
+    let local_callee = sender.module.declare_func_in_func(callee, builder.func);
+
+    let zero_slot = builder.create_stack_slot(StackSlotData::new(
+        StackSlotKind::ExplicitSlot,
+        types::I32.bytes(),
+    ));
+    let zero_ptr = builder.ins().stack_addr(sender.pointer_type, zero_slot, 0);
+    let zero = builder.ins().iconst(sender.pointer_type, 0);
+    builder.ins().stack_store(zero, zero_slot, 0);
+
+    let sym = sender
+        .module
+        .declare_data("stdin", Linkage::Import, false, None)?;
+    let local_id = sender.module.declare_data_in_func(sym, builder.func);
+    let stdin_ptr = builder
+        .ins()
+        .symbol_value(sender.module.target_config().pointer_type(), local_id);
+    let stdin = builder.ins().load(sender.pointer_type, MemFlags::new(), stdin_ptr, 0);
+
+    let call = builder
+        .ins()
+        .call(local_callee, &[line_ptr, zero_ptr, stdin]);
 
     Ok(builder.inst_results(call)[0])
 }

@@ -15,6 +15,7 @@ use crate::pst::{
 };
 use crate::types::Type;
 use crate::types::Type::{Boolean, Chars, Number};
+use std::io::Read;
 
 type ReadResult<'a, O> = IResult<&'a str, O, VerboseError<&'a str>>;
 
@@ -42,6 +43,7 @@ fn keyword(s: &str) -> ReadResult<&str> {
         keyword_decrement,
         keyword_declare_paragraph_type,
         keyword_using,
+        keyword_the_next,
     ))(s)
 }
 
@@ -214,6 +216,7 @@ fn statement(s: &str) -> ReadResult<Statement> {
     terminated(
         alt((
             print_statement,
+            read_statement,
             declare_statement,
             assign_statement,
             if_statement,
@@ -230,7 +233,32 @@ fn statement(s: &str) -> ReadResult<Statement> {
 fn print_statement(s: &str) -> ReadResult<Statement> {
     map(
         preceded(preceded(keyword_print, whitespace1), expr(true)),
-        |s| Statement::Print(s),
+        Statement::Print,
+    )(s)
+}
+
+fn keyword_read(s: &str) -> ReadResult<&str> {
+    recognize(tuple((
+        tag("I"),
+        whitespace1,
+        alt((tag("heard"), tag("read"), tag("asked"))),
+    )))(s)
+}
+
+fn keyword_the_next(s: &str) -> ReadResult<&str> {
+    recognize(tuple((tag("the"), whitespace1, tag("next"))))(s)
+}
+
+fn read_statement(s: &str) -> ReadResult<Statement> {
+    map(
+        preceded(
+            preceded(keyword_read, whitespace1),
+            pair(
+                var,
+                opt(preceded(whitespace_delim1(keyword_the_next), type_)),
+            ),
+        ),
+        |(var, type_)| Statement::Read(var, type_, None),
     )(s)
 }
 
@@ -289,15 +317,19 @@ fn assign_statement(s: &str) -> ReadResult<Statement> {
 }
 
 fn declare_type(s: &str) -> ReadResult<Type> {
+    preceded(terminated(keyword_declare_type, whitespace1), type_)(s)
+}
+
+fn type_(s: &str) -> ReadResult<Type> {
     alt((type_number, type_chars, type_boolean))(s)
 }
 
+fn keyword_declare_type(s: &str) -> ReadResult<&str> {
+    alt((tag("a"), tag("the")))(s)
+}
+
 fn keyword_type_number(s: &str) -> ReadResult<&str> {
-    recognize(separated_pair(
-        alt((tag("a"), tag("the"))),
-        whitespace1,
-        tag("number"),
-    ))(s)
+    tag("number")(s)
 }
 
 fn type_number(s: &str) -> ReadResult<Type> {
@@ -305,16 +337,12 @@ fn type_number(s: &str) -> ReadResult<Type> {
 }
 
 fn keyword_type_chars(s: &str) -> ReadResult<&str> {
-    recognize(separated_pair(
-        alt((tag("a"), tag("the"))),
-        whitespace1,
-        alt((
-            tag("word"),
-            tag("phrase"),
-            tag("sentence"),
-            tag("quote"),
-            tag("name"),
-        )),
+    alt((
+        tag("word"),
+        tag("phrase"),
+        tag("sentence"),
+        tag("quote"),
+        tag("name"),
     ))(s)
 }
 
@@ -323,11 +351,7 @@ fn type_chars(s: &str) -> ReadResult<Type> {
 }
 
 fn keyword_type_boolean(s: &str) -> ReadResult<&str> {
-    recognize(separated_pair(
-        alt((tag("a"), tag("the"))),
-        whitespace1,
-        alt((tag("logic"), tag("argument"))),
-    ))(s)
+    alt((tag("logic"), tag("argument")))(s)
 }
 
 fn type_boolean(s: &str) -> ReadResult<Type> {
@@ -920,7 +944,15 @@ fn prefix_not<'a>(_allow_infix_and: bool) -> impl Fn(&'a str) -> ReadResult<Expr
 }
 
 fn boolean(s: &str) -> ReadResult<Literal> {
-    alt((true_, false_))(s)
+    preceded(
+        opt(tuple((
+            keyword_declare_type,
+            whitespace1,
+            keyword_type_boolean,
+            whitespace1,
+        ))),
+        alt((true_, false_)),
+    )(s)
 }
 
 fn true_(s: &str) -> ReadResult<Literal> {
@@ -938,18 +970,34 @@ fn false_(s: &str) -> ReadResult<Literal> {
 }
 
 fn string(s: &str) -> ReadResult<Literal> {
-    alt((
-        // is_not fails on empty string, so special-case that.
-        map(tag("\"\""), |_| Literal::Chars("")),
-        map(delimited(is_a("\""), is_not("\""), is_a("\"")), |s| {
-            Literal::Chars(s)
-        }),
-    ))(s)
+    preceded(
+        opt(tuple((
+            keyword_declare_type,
+            whitespace1,
+            keyword_type_chars,
+            whitespace1,
+        ))),
+        alt((
+            // is_not fails on empty string, so special-case that.
+            map(tag("\"\""), |_| Literal::Chars("")),
+            map(delimited(is_a("\""), is_not("\""), is_a("\"")), |s| {
+                Literal::Chars(s)
+            }),
+        )),
+    )(s)
 }
 
 fn number(s: &str) -> ReadResult<Literal> {
     map(
-        preceded(opt(terminated(keyword_type_number, whitespace1)), double),
+        preceded(
+            opt(tuple((
+                keyword_declare_type,
+                whitespace1,
+                keyword_type_number,
+                whitespace1,
+            ))),
+            double,
+        ),
         Literal::Number,
     )(s)
 }
@@ -1198,10 +1246,7 @@ fn parses_multiline_comment() {
 fn parses_literal() {
     assert_eq!(literal("\"string\""), Ok(("", Literal::Chars("string"))));
     assert_eq!(literal("12"), Ok(("", Literal::Number(12f64))));
-    assert_eq!(
-        literal("the number -1.6"),
-        Ok(("", Literal::Number(-1.6f64)))
-    );
+    assert_eq!(literal("-1.6"), Ok(("", Literal::Number(-1.6f64))));
 }
 
 #[test]
@@ -1690,5 +1735,23 @@ fn parses_return_statement() {
     assert_eq!(
         statement("Then you get a pie!"),
         Ok(("", Statement::Return(Expr::Call(Call("a pie", vec![])))))
+    );
+}
+
+#[test]
+fn parses_read_statement() {
+    assert_eq!(
+        statement("I heard Applejack's speech."),
+        Ok((
+            "",
+            Statement::Read(Variable("Applejack's speech"), None, None)
+        ))
+    );
+    assert_eq!(
+        statement("I read Twilight the next number."),
+        Ok((
+            "",
+            Statement::Read(Variable("Twilight"), Some(Number), None)
+        ))
     );
 }
