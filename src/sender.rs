@@ -20,7 +20,6 @@ use crate::types::Type::{Boolean, Chars, Number};
 use crate::vars::{Callable, Callables};
 
 use cranelift_object::{ObjectBackend, ObjectBuilder, ObjectTrapCollection};
-use nom::number::complete::be_u8;
 use std::collections::HashSet;
 use std::ffi::{CStr, CString};
 use std::io::Write;
@@ -271,6 +270,13 @@ fn send_constants<'a, B: Backend>(sender: &mut Sender<B>) -> ReportResult<()> {
     create_constant_string("nothing", sender)?;
     // for formatting numbers
     create_constant_string("%g", sender)?;
+    // for parsing booleans
+    create_constant_string("true", sender)?;
+    create_constant_string("false", sender)?;
+    create_constant_string("right", sender)?;
+    create_constant_string("wrong", sender)?;
+    create_constant_string("correct", sender)?;
+    create_constant_string("incorrect", sender)?;
     Ok(())
 }
 
@@ -574,8 +580,6 @@ fn send_read_statement<'a, B: Backend>(
                 types::I32.bytes(),
             ));
             let line_ptr = builder.ins().stack_addr(sender.pointer_type, line_slot, 0);
-//            let zero = builder.ins().iconst(types::I32, 0);
-//            builder.ins().store(MemFlags::new(), zero, line_ptr, 0);
 
             let len = get_line(line_ptr, sender, builder)?;
             let line = builder.ins().load(sender.pointer_type, MemFlags::new(), line_ptr, 0);
@@ -586,7 +590,54 @@ fn send_read_statement<'a, B: Backend>(
             let zero = builder.ins().iconst(types::I8, 0);
             builder.ins().store(MemFlags::new(), zero, newline_ptr, 0);
 
-            Ok((Chars, line))
+            let parsed_value = match type_ {
+                Chars => line,
+                Number => unimplemented!(),
+                Boolean => {
+                    let merge_block = builder.create_ebb();
+                    builder.append_ebb_param(merge_block, types::I32);
+
+                    let yes = reference_constant_string("yes", sender, builder)?;
+                    let no = reference_constant_string("no", sender, builder)?;
+                    let true_ = reference_constant_string("true", sender, builder)?;
+                    let false_ = reference_constant_string("false", sender, builder)?;
+                    let right = reference_constant_string("right", sender, builder)?;
+                    let wrong = reference_constant_string("wrong", sender, builder)?;
+                    let correct = reference_constant_string("correct", sender, builder)?;
+                    let incorrect = reference_constant_string("incorrect", sender, builder)?;
+
+                    let zero = builder.ins().iconst(types::I32, 0);
+                    let one = builder.ins().iconst(types::I32, 1);
+
+                    let cmp = compare_strings(line, yes, sender, builder)?;
+                    builder.ins().brz(cmp, merge_block, &[one]);
+                    let cmp = compare_strings(line, true_, sender, builder)?;
+                    builder.ins().brz(cmp, merge_block, &[one]);
+                    let cmp = compare_strings(line, right, sender, builder)?;
+                    builder.ins().brz(cmp, merge_block, &[one]);
+                    let cmp = compare_strings(line, correct, sender, builder)?;
+                    builder.ins().brz(cmp, merge_block, &[one]);
+
+                    let cmp = compare_strings(line, no, sender, builder)?;
+                    builder.ins().brz(cmp, merge_block, &[zero]);
+                    let cmp = compare_strings(line, false_, sender, builder)?;
+                    builder.ins().brz(cmp, merge_block, &[zero]);
+                    let cmp = compare_strings(line, wrong, sender, builder)?;
+                    builder.ins().brz(cmp, merge_block, &[zero]);
+                    let cmp = compare_strings(line, incorrect, sender, builder)?;
+                    builder.ins().brz(cmp, merge_block, &[zero]);
+
+                    // TODO: print a useful error.
+                    builder.ins().trap(TrapCode::User(1));
+
+                    builder.switch_to_block(merge_block);
+                    builder.seal_block(merge_block);
+
+                    builder.ebb_params(merge_block)[0]
+                },
+            };
+
+            Ok((type_, parsed_value))
         }
     )
 }
