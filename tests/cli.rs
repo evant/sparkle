@@ -174,7 +174,6 @@ fn sends_hello_equestria() -> TestResult {
 
     let mut report_cmd = if cfg!(target_os = "windows") {
         let mut build = Command::new("canter.bat");
-        build.arg(get_windows_env_var_cmd());
 
         build.assert().success();
 
@@ -193,36 +192,4 @@ fn sends_hello_equestria() -> TestResult {
         .stdout("Hello, Equestria!".to_string() + EOL);
 
     Ok(())
-}
-
-#[test]
-#[cfg(target_os = "windows")]
-#[ignore]
-fn windows_env_var_cmd() {
-    println!("{:?} x64", get_windows_env_var_cmd());
-
-    panic!();
-}
-
-fn get_windows_env_var_cmd() -> PathBuf {
-    let tool = cc::windows_registry::find_tool("x86_64-pc-windows-msvc", "cl.exe").unwrap();
-    //TODO: a better way?
-    let env_path = tool
-        .path()
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .join("Auxiliary\\Build\\vcvarsall.bat");
-    env_path
 }

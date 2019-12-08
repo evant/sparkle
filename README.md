@@ -30,14 +30,11 @@ sparkle send examples/hello_equestria.fpp
 ```
 
 #### Windows
-You currently need to link the output on windows, this is tempoary until I can figure out how to invoke the linker.
 
-(Using the Visual Studio 2019 [Build Tools](https://visualstudio.microsoft.com/downloads/#build-tools-for-visual-studio-2019))
+You will need to install the Visual Studio [Build Tools](https://visualstudio.microsoft.com/downloads/#build-tools-for-visual-studio-2019)
 ```
-"C:\Program Files (x86)\Microsoft Visual Studio\2019\BuildTools\VC\Auxiliary\Build\vcvarsall.bat" x64
-sparkle.exe send examples/hello_equestria.fpp
-link hello_equestria.obj ucrt.lib /entry:main
-hello_canterlot.exe
+sparkle send examples/hello_equestria.fpp
+hello_equestria
 ```
 
 ### Cross Compiling
@@ -56,5 +53,5 @@ cc hello_equestria.o -o hello_equestria
 
 ```
 "C:\Program Files (x86)\Microsoft Visual Studio\2019\BuildTools\VC\Auxiliary\Build\vcvarsall.bat" x64
-link hello_equestria.obj ucrt.lib /entry:main
+cl hello_equestria.obj ucrt.lib msvcrt.lib
 ```

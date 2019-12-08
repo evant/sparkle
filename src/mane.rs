@@ -2,10 +2,10 @@ use std::borrow::Borrow;
 use std::env::args;
 use std::error::Error;
 use std::fs::read_to_string;
-use std::path::Path;
-use std::process::exit;
 use std::io;
 use std::io::Write;
+use std::path::Path;
+use std::process::exit;
 
 mod error;
 mod pst;
@@ -149,24 +149,24 @@ fn main() -> Result<(), Box<dyn Error>> {
             let path_name = sender::send_out(&ast, name, target)?;
 
             if should_link {
-                let _output = if cfg!(target_os = "windows") {
-                    //TODO
-                    //            let tool = cc::windows_registry::find_tool(target, "link.exe").unwrap();
-                    //            tool.to_command()
-                    //                .arg(path_name)
-                    //                .arg("ucrt.lib")
-                    //                .arg("/entry:main")
-                    //                .output().unwrap()
+                let output = if cfg!(target_os = "windows") {
+                    let tool = cc::windows_registry::find_tool(target, "cl.exe").unwrap();
+                    tool.to_command()
+                        .arg(path_name)
+                        .arg("ucrt.lib")
+                        .arg("msvcrt.lib")
+                        .output()
+                        .unwrap()
                 } else {
-                    let output = std::process::Command::new("cc")
+                    std::process::Command::new("cc")
                         .arg(path_name)
                         .arg("-o")
                         .arg(name)
                         .output()
-                        .unwrap();
-                    io::stdout().write_all(&output.stdout).unwrap();
-                    io::stderr().write_all(&output.stderr).unwrap();
+                        .unwrap()
                 };
+                io::stdout().write_all(&output.stdout).unwrap();
+                io::stderr().write_all(&output.stderr).unwrap();
             }
         }
         Command::Gallop => sender::gallop_mane(&ast, TARGET_HOST)?,
