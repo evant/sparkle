@@ -461,6 +461,14 @@ fn send_statement<'a, B: Backend>(
             &mut vars.create_child(),
             function_sender,
         ),
+        Statement::DoWhile(cond, body) => send_do_while_statement(
+            cond,
+            body,
+            return_type,
+            sender,
+            &mut vars.create_child(),
+            function_sender,
+        ),
         Statement::Call(call) => {
             send_call(call, sender, vars, function_sender)?;
             Ok(())
@@ -856,6 +864,43 @@ fn send_while_statement<'a, B: Backend>(
     for statement in body {
         send_statement(statement, return_type, sender, vars, function_sender)?;
     }
+    function_sender.builder.ins().jump(header_block, &[]);
+
+    function_sender.builder.switch_to_block(exit_block);
+
+    // We've reached the bottom of the loop, so there will be no
+    // more backedges to the header to exits to the bottom.
+    function_sender.builder.seal_block(header_block);
+    function_sender.builder.seal_block(exit_block);
+
+    Ok(())
+}
+
+fn send_do_while_statement<'a, B: Backend>(
+    cond: &Expr<'a>,
+    body: &'a [Statement<'a>],
+    return_type: Option<crate::types::Type>,
+    sender: &mut Sender<B>,
+    vars: &mut Callables<'a>,
+    function_sender: &mut FunctionSender,
+) -> ReportResult<()> {
+    let header_block = function_sender.builder.create_ebb();
+    let exit_block = function_sender.builder.create_ebb();
+    function_sender.builder.ins().jump(header_block, &[]);
+    function_sender.builder.switch_to_block(header_block);
+
+    for statement in body {
+        send_statement(statement, return_type, sender, vars, function_sender)?;
+    }
+
+    let (expr_type, expr_value) = send_expression(cond, sender, vars, function_sender)?;
+    Boolean.check(expr_type)?;
+
+    function_sender
+        .builder
+        .ins()
+        .brz(expr_value, exit_block, &[]);
+
     function_sender.builder.ins().jump(header_block, &[]);
 
     function_sender.builder.switch_to_block(exit_block);

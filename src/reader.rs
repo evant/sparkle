@@ -1,3 +1,5 @@
+use std::io::Read;
+
 use nom::branch::alt;
 use nom::bytes::complete::{is_a, is_not, tag, take_till1, take_while};
 use nom::character::complete::space1;
@@ -15,7 +17,6 @@ use crate::pst::{
 };
 use crate::types::Type;
 use crate::types::Type::{Boolean, Chars, Number};
-use std::io::Read;
 
 type ReadResult<'a, O> = IResult<&'a str, O, VerboseError<&'a str>>;
 
@@ -221,6 +222,7 @@ fn statement(s: &str) -> ReadResult<Statement> {
             assign_statement,
             if_statement,
             while_statement,
+            do_while_statement,
             increment_statement,
             decrement_statement,
             call_statement,
@@ -256,7 +258,7 @@ fn read_statement(s: &str) -> ReadResult<Statement> {
             tuple((
                 var,
                 opt(preceded(whitespace_delim1(keyword_the_next), type_)),
-                opt(preceded(whitespace1, expr(true)))
+                opt(preceded(whitespace1, expr(true))),
             )),
         ),
         |(var, type_, prompt)| Statement::Read(var, type_, prompt),
@@ -479,13 +481,10 @@ fn keyword_declare_while(s: &str) -> ReadResult<&str> {
 }
 
 fn while_declaration(s: &str) -> ReadResult<Expr> {
-    map(
         preceded(
             terminated(keyword_declare_while, whitespace1),
             terminated(expr(true), punctuation),
-        ),
-        |cond| cond,
-    )(s)
+        )(s)
 }
 
 fn keyword_while_closing(s: &str) -> ReadResult<&str> {
@@ -502,6 +501,64 @@ fn keyword_while_closing(s: &str) -> ReadResult<&str> {
 
 fn while_closing(s: &str) -> ReadResult<&str> {
     terminated(keyword_while_closing, punctuation)(s)
+}
+
+fn do_while_statement(s: &str) -> ReadResult<Statement> {
+    map(
+        tuple((
+            terminated(do_while_declaration, whitespace0),
+            many0(statement),
+            do_while_closing,
+        )),
+        |(_, body, cond)| Statement::DoWhile(cond, body),
+    )(s)
+}
+
+fn keyword_do_while_declaration(s: &str) -> ReadResult<&str> {
+    recognize(tuple((
+        tag("Here's"),
+        whitespace1,
+        tag("what"),
+        whitespace1,
+        tag("I"),
+        whitespace1,
+        tag("did"),
+    )))(s)
+}
+
+fn do_while_declaration(s: &str) -> ReadResult<&str> {
+    terminated(
+        keyword_do_while_declaration,
+        terminated(whitespace0, punctuation),
+    )(s)
+}
+
+fn keyword_do_while_closing(s: &str) -> ReadResult<&str> {
+    recognize(tuple((
+        tag("I"),
+        whitespace1,
+        tag("did"),
+        whitespace1,
+        tag("this"),
+        whitespace1,
+        alt((
+            tag("while"),
+            recognize(tuple((
+                tag("as"),
+                whitespace1,
+                tag("long"),
+                whitespace1,
+                tag("as"),
+            ))),
+        )),
+    )))(s)
+}
+
+fn do_while_closing(s: &str) -> ReadResult<Expr> {
+    preceded(
+        terminated(keyword_do_while_closing, whitespace1),
+        expr(true)
+    )(s)
 }
 
 fn keyword_increment(s: &str) -> ReadResult<&str> {
@@ -1217,7 +1274,7 @@ fn parses_report() {
                         Variable("I"),
                         None,
                         Some(Expr::Lit(Literal::Number(100f64))),
-                        false
+                        false,
                     ))
                 ],
                 writer: " Twilight Sparkle",
@@ -1602,7 +1659,7 @@ fn parses_assign_statement() {
         statement("Spike's age is now 11!"),
         Ok((
             "",
-            Statement::Assign(Variable("Spike's age"), Expr::Lit(Literal::Number(11f64)),)
+            Statement::Assign(Variable("Spike's age"), Expr::Lit(Literal::Number(11f64)))
         ))
     );
     assert_eq!(
@@ -1668,6 +1725,20 @@ fn parses_while_statement() {
 }
 
 #[test]
+fn parses_do_while_statement() {
+    assert_eq!(
+        statement("Here's what I did, I said \"I'm hungry\". I did this as long as true."),
+        Ok((
+            "",
+            Statement::DoWhile(
+                Expr::Lit(Literal::Boolean(true)),
+                vec![Statement::Print(Expr::Lit(Literal::Chars("I'm hungry")))],
+            )
+        ))
+    );
+}
+
+#[test]
 fn parses_increment_statement() {
     assert_eq!(
         statement("Spike got one more."),
@@ -1695,7 +1766,7 @@ fn parses_call_statement() {
             "",
             Statement::Call(Call(
                 "how to fly",
-                vec![Expr::Lit(Literal::Chars("Twilight Sparkle"))]
+                vec![Expr::Lit(Literal::Chars("Twilight Sparkle"))],
             ))
         ))
     );
@@ -1708,7 +1779,7 @@ fn parses_call_statement() {
                 vec![
                     Expr::Call(Call("Rainbow Dash", vec![])),
                     Expr::Call(Call("Fluttershy", vec![]))
-                ]
+                ],
             ))
         ))
     )
@@ -1725,7 +1796,7 @@ fn parses_call_expr() {
                 vec![
                     Expr::Call(Call("Rainbow Dash", vec![])),
                     Expr::Call(Call("Fluttershy", vec![]))
-                ]
+                ],
             ))
         ))
     )
@@ -1762,7 +1833,7 @@ fn parses_read_statement() {
             Statement::Read(
                 Variable("Spike"),
                 None,
-                Some(Expr::Lit(Literal::Chars("How many gems are left?")))
+                Some(Expr::Lit(Literal::Chars("How many gems are left?"))),
             )
         ))
     );
@@ -1773,7 +1844,7 @@ fn parses_read_statement() {
             Statement::Read(
                 Variable("Applejack"),
                 Some(Number),
-                Some(Expr::Lit(Literal::Chars("How many apples do you have?")))
+                Some(Expr::Lit(Literal::Chars("How many apples do you have?"))),
             )
         ))
     );

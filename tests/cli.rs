@@ -119,7 +119,10 @@ fn branches() -> TestResult {
         "I wish I were a tree\n\
          I'll help them\n\
          I'll help them\n\
-         I'll help them\n"
+         I'll help them\n\
+         I'll release them\n\
+         I'll release them\n\
+         I'll release them\n"
             .replace("\n", EOL),
     );
 
