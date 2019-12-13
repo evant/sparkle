@@ -1,7 +1,7 @@
 use std::fs::File;
 
 use std::str::FromStr;
-use std::{io, mem};
+use std::{mem};
 
 use cranelift::codegen::Context;
 use cranelift::prelude::settings::{self, Configurable};
@@ -25,7 +25,6 @@ use std::ffi::{CStr, CString};
 use std::io::Write;
 use std::os::raw::c_char;
 use std::path::Path;
-use std::process::Command;
 
 type ReportResult<T> = Result<T, ReportError>;
 
@@ -43,7 +42,7 @@ pub fn send_out<'a>(report: &'a Report, name: &str, target: &str) -> ReportResul
     let path_name = name.to_owned() + ext;
     let path = Path::new(&path_name);
     let mut file = File::create(path).expect("error opening file");
-    file.write(&product.emit().unwrap())
+    file.write_all(&product.emit().unwrap())
         .expect("error writing to file");
 
     Ok(path_name)
@@ -240,7 +239,7 @@ fn send<'a, B: Backend>(
     Ok(id)
 }
 
-fn send_constants<'a, B: Backend>(sender: &mut Sender<B>) -> ReportResult<()> {
+fn send_constants<B: Backend>(sender: &mut Sender<B>) -> ReportResult<()> {
     // for printing booleans
     create_constant_string("yes", sender)?;
     create_constant_string("no", sender)?;
@@ -265,7 +264,7 @@ fn send_declare_global<'a, B: Backend>(
     function_sender: &mut FunctionSender,
 ) -> ReportResult<()> {
     let DeclareVar(pst::Variable(name), type_, expr, is_const) = declare_var;
-    let (type_, value) = send_init_variable(*type_, expr, sender, globals, function_sender)?;
+    let (type_, _value) = send_init_variable(*type_, expr, sender, globals, function_sender)?;
 
     sender
         .data_context
@@ -281,7 +280,7 @@ fn send_declare_global<'a, B: Backend>(
     Ok(())
 }
 
-fn send_mane<'a, B: Backend>(
+fn send_mane<B: Backend>(
     mane_paragraphs: &[FuncId],
     init_globals: FuncId,
     sender: &mut Sender<B>,
@@ -567,7 +566,7 @@ fn print<B: Backend>(
             .symbol_value(sender.module.target_config().pointer_type(), local_id);
         let stdout = builder.ins().load(sender.pointer_type, MemFlags::new(), stdout_ptr, 0);
 
-        let call = builder
+        let _call = builder
             .ins()
             .call(local_callee, &[value, stdout]);
     }
@@ -669,7 +668,7 @@ fn send_read_statement<'a, B: Backend>(
     )
 }
 
-fn send_declare_statement<'a, 'b, B: Backend>(
+fn send_declare_statement<'a, B: Backend>(
     var: &'a pst::Variable<'a>,
     type_: Option<crate::types::Type>,
     expr: &Option<Expr<'a>>,

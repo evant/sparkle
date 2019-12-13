@@ -1,5 +1,3 @@
-use std::io::Read;
-
 use nom::branch::alt;
 use nom::bytes::complete::{is_a, is_not, tag, take_till1, take_while};
 use nom::character::complete::space1;
