@@ -1,9 +1,18 @@
 use crate::error::ReportError;
 use crate::pst::Literal;
+use nom::lib::std::convert::TryInto;
 use std::fmt::{Error, Formatter};
 
 #[derive(Debug, PartialEq, Eq, Copy, Clone)]
 pub enum Type {
+    Chars,
+    Number,
+    Boolean,
+    Array(ArrayType),
+}
+
+#[derive(Debug, PartialEq, Eq, Copy, Clone)]
+pub enum ArrayType {
     Chars,
     Number,
     Boolean,
@@ -56,12 +65,50 @@ impl Into<Type> for &Literal<'_> {
     }
 }
 
+impl Into<Type> for ArrayType {
+    fn into(self) -> Type {
+        match self {
+            ArrayType::Chars => Type::Chars,
+            ArrayType::Number => Type::Number,
+            ArrayType::Boolean => Type::Boolean,
+        }
+    }
+}
+
+impl TryInto<ArrayType> for Type {
+    type Error = ReportError;
+
+    fn try_into(self) -> Result<ArrayType, Self::Error> {
+        Ok(match self {
+            Type::Chars => ArrayType::Chars,
+            Type::Number => ArrayType::Number,
+            Type::Boolean => ArrayType::Boolean,
+            Type::Array(_) => {
+                return Err(ReportError::TypeError(
+                    "cannot store arrays in arrays".to_string(),
+                ))
+            }
+        })
+    }
+}
+
 impl std::fmt::Display for Type {
     fn fmt(&self, f: &mut Formatter) -> Result<(), Error> {
         match self {
             Type::Chars => write!(f, "string"),
             Type::Number => write!(f, "number"),
             Type::Boolean => write!(f, "boolean"),
+            Type::Array(type_) => write!(f, "[{}]", type_),
+        }
+    }
+}
+
+impl std::fmt::Display for ArrayType {
+    fn fmt(&self, f: &mut Formatter) -> Result<(), Error> {
+        match self {
+            ArrayType::Chars => write!(f, "string"),
+            ArrayType::Number => write!(f, "number"),
+            ArrayType::Boolean => write!(f, "boolean"),
         }
     }
 }

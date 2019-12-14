@@ -13,8 +13,8 @@ use crate::pst::{
     Arg, BinOperator, Call, Declaration, DeclareVar, Expr, Literal, Paragraph, Report, Statement,
     Variable,
 };
-use crate::types::Type;
-use crate::types::Type::{Boolean, Chars, Number};
+use crate::types::Type::{Array, Boolean, Chars, Number};
+use crate::types::{ArrayType, Type};
 
 type ReadResult<'a, O> = IResult<&'a str, O, VerboseError<&'a str>>;
 
@@ -296,17 +296,28 @@ fn declare_var(s: &str) -> ReadResult<DeclareVar> {
             preceded(keyword_declare_statement, whitespace1),
             tuple((
                 identifier,
-                whitespace_delim(terminated(
+                preceded(whitespace1, terminated(
                     map(opt(terminated(keyword_always, whitespace1)), |always| {
                         always.is_some()
                     }),
                     keyword_declare,
                 )),
-                opt(declare_type),
-                opt(whitespace_delim(expr(true))),
+                alt((
+                    pair(
+                        map(preceded(whitespace1, declare_array_type), Some),
+                        opt(preceded(whitespace1, separated_nonempty_list(
+                            whitespace_delim1(tag("and")),
+                            expr(false),
+                        ))),
+                    ),
+                    pair(
+                        opt(preceded(whitespace1, declare_type)),
+                        opt(map(preceded(whitespace1, expr(true)), |e| vec![e])),
+                    ),
+                )),
             )),
         ),
-        |(name, is_const, type_, expr)| DeclareVar(Variable(name), type_, expr, is_const),
+        |(name, is_const, (type_, expr))| DeclareVar(Variable(name), type_, expr, is_const),
     )(s)
 }
 
@@ -321,12 +332,20 @@ fn declare_type(s: &str) -> ReadResult<Type> {
     preceded(terminated(keyword_declare_type, whitespace1), type_)(s)
 }
 
+fn declare_array_type(s: &str) -> ReadResult<Type> {
+    preceded(opt(terminated(keyword_declare_array_type, whitespace1)), type_array)(s)
+}
+
 fn type_(s: &str) -> ReadResult<Type> {
     alt((type_number, type_chars, type_boolean))(s)
 }
 
 fn keyword_declare_type(s: &str) -> ReadResult<&str> {
     alt((tag("a"), tag("the")))(s)
+}
+
+fn keyword_declare_array_type(s: &str) -> ReadResult<&str> {
+    alt((tag("many"), tag("the")))(s)
 }
 
 fn keyword_type_number(s: &str) -> ReadResult<&str> {
@@ -357,6 +376,43 @@ fn keyword_type_boolean(s: &str) -> ReadResult<&str> {
 
 fn type_boolean(s: &str) -> ReadResult<Type> {
     map(keyword_type_boolean, |_| Boolean)(s)
+}
+
+fn type_array(s: &str) -> ReadResult<Type> {
+    map(
+        alt((type_number_array, type_chars_array, type_boolean_array)),
+        Array,
+    )(s)
+}
+
+fn type_number_array(s: &str) -> ReadResult<ArrayType> {
+    map(keyword_type_number_array, |_| ArrayType::Number)(s)
+}
+
+fn keyword_type_number_array(s: &str) -> ReadResult<&str> {
+    tag("numbers")(s)
+}
+
+fn type_chars_array(s: &str) -> ReadResult<ArrayType> {
+    map(keyword_type_chars_array, |_| ArrayType::Chars)(s)
+}
+
+fn keyword_type_chars_array(s: &str) -> ReadResult<&str> {
+    alt((
+        tag("words"),
+        tag("phrases"),
+        tag("sentences"),
+        tag("quotes"),
+        tag("names"),
+    ))(s)
+}
+
+fn type_boolean_array(s: &str) -> ReadResult<ArrayType> {
+    map(keyword_type_boolean_array, |_| ArrayType::Boolean)(s)
+}
+
+fn keyword_type_boolean_array(s: &str) -> ReadResult<&str> {
+    tag("arguments")(s)
 }
 
 fn keyword_declare(s: &str) -> ReadResult<&str> {
@@ -479,10 +535,10 @@ fn keyword_declare_while(s: &str) -> ReadResult<&str> {
 }
 
 fn while_declaration(s: &str) -> ReadResult<Expr> {
-        preceded(
-            terminated(keyword_declare_while, whitespace1),
-            terminated(expr(true), punctuation),
-        )(s)
+    preceded(
+        terminated(keyword_declare_while, whitespace1),
+        terminated(expr(true), punctuation),
+    )(s)
 }
 
 fn keyword_while_closing(s: &str) -> ReadResult<&str> {
@@ -555,7 +611,7 @@ fn keyword_do_while_closing(s: &str) -> ReadResult<&str> {
 fn do_while_closing(s: &str) -> ReadResult<Expr> {
     preceded(
         terminated(keyword_do_while_closing, whitespace1),
-        expr(true)
+        expr(true),
     )(s)
 }
 
@@ -1271,7 +1327,7 @@ fn parses_report() {
                     Declaration::Var(DeclareVar(
                         Variable("I"),
                         None,
-                        Some(Expr::Lit(Literal::Number(100f64))),
+                        Some(vec![Expr::Lit(Literal::Number(100f64))]),
                         false,
                     ))
                 ],
@@ -1632,7 +1688,7 @@ fn parses_declare_statement() {
             Statement::Declare(DeclareVar(
                 Variable("Applejack's hat"),
                 Some(Chars),
-                Some(Expr::Lit(Literal::Chars("Talluah"))),
+                Some(vec![Expr::Lit(Literal::Chars("Talluah"))]),
                 false,
             ))
         ))
@@ -1644,9 +1700,20 @@ fn parses_declare_statement() {
             Statement::Declare(DeclareVar(
                 Variable("Pinkie Pie"),
                 None,
-                Some(Expr::Lit(Literal::Boolean(true))),
+                Some(vec![Expr::Lit(Literal::Boolean(true))]),
                 true,
             ))
+        ))
+    );
+    assert_eq!(
+        statement("Did you know that cake has the names \"chocolate\" and \"apple cinnamon\" and \"fruit\"?"),
+        Ok((
+            "",
+            Statement::Declare(DeclareVar(Variable("cake"), Some(Array(ArrayType::Chars)), Some(vec![
+                Expr::Lit(Literal::Chars("chocolate")),
+                Expr::Lit(Literal::Chars("apple cinnamon")),
+                Expr::Lit(Literal::Chars("fruit")),
+            ]), false))
         ))
     );
 }

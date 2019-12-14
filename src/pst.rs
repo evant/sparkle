@@ -29,7 +29,7 @@ pub enum Statement<'a> {
 pub struct DeclareVar<'a>(
     pub Variable<'a>,
     pub Option<Type>,
-    pub Option<Expr<'a>>,
+    pub Option<Vec<Expr<'a>>>,
     pub bool,
 );
 

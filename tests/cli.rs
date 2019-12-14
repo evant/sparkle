@@ -168,6 +168,20 @@ fn number_gusser() -> TestResult {
 }
 
 #[test]
+fn cakes() -> TestResult {
+    let mut cmd = Command::cargo_bin("sparkle")?;
+
+    cmd.arg("gallop").arg("examples/cakes.fpp");
+
+    cmd.assert().success().stdout(
+        "I can bake chocolate and apple cinnamon and fruit cakes!\n\
+         My favorite numbers are 1 and 2 and 3.14 and 4 and ok all of them are my favorites!\n"
+    );
+
+    Ok(())
+}
+
+#[test]
 fn sends_hello_equestria() -> TestResult {
     let mut cmd = Command::cargo_bin("sparkle")?;
 

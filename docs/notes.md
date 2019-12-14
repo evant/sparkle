@@ -33,9 +33,12 @@ It says
 As fun as it would be to randomly decide order of operations, I went with left-to-right to match boolean operations.
 ex: `1 plus 1 times 2` gives `4`.
 
-## Printing Booleans
+## Printing
 
 No where does it say how booleans should be represented when printed. Decided to go with `yes/no`.
+
+No where does it say how arrays should be represented when printed. Decided to go with `<item1> and <item2> and <item3>`
+to match declaration.
 
 ## Variable Declaration
 
@@ -51,6 +54,13 @@ ambiguity parsing that, much like printing. ex: `Spike's age is now 10 plus 1`.
 
 Unlike the reference, values are _not_ converted to strings if their types differ. It is a compiler error instead. You
 can do this explicitly with concatenation ex: `"1" is 1 ""`.
+
+The reference says that for arrays, ex: the less than "the operator will return true if the length of the left is smaller 
+than that of the right, or if they are the same length and the sum of the values in the left array is smaller than that
+of the right." There's a couple of problems with this. First, this method of comparison is kinda useless, it relies on
+the writer to know ahead of time if the arrays will always be the same size or not because the behavior is completely
+different based on that. Second, "the sum of all the values" only works for arrays of numbers, arrays of other types is
+not defined. Instead, I decided to _only_ compare arrays based on length as this is well-defined in all cases.
 
 ## Calling
 
@@ -73,6 +83,7 @@ Since it's not well defined in the reference, the default values for various typ
 | string  | nothing       |
 | number  | 0             |
 | boolean | false         |
+| array   | nothing       |
 
 ## Literals
 
