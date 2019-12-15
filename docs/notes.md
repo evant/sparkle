@@ -43,7 +43,8 @@ to match declaration.
 ## Variable Declaration
 
 Added the ability to omit the type when declaring with a value. The type can be inferred by the value.
-ex: `Did you know that Spike's age is 10?`. This often reads better.
+ex: `Did you know that Spike's age is 10?`. This often reads better. Unfortunately, this does not work for arrays as 
+it's ambiguous if you are using `and` as an operator or an element separator.
 
 ## Variable Assignment
 
@@ -67,7 +68,7 @@ not defined. Instead, I decided to _only_ compare arrays based on length as this
 You can use arbitrary expressions when calling another paragraph. However, using the infix `and`
 operator is ambiguous in this case so it's disabled in this context. You can either: use the prefix
 version, use an alternate name, or assign to a variable and use that instead. ex:
-`I remembered to give my friend Appljack's apples plus 1 and add Rarity's dresses and 2.`
+`I remembered to give my friend using Appljack's apples plus 1 and add Rarity's dresses and 2.`
 
 ## Scoping
 
@@ -84,6 +85,13 @@ Since it's not well defined in the reference, the default values for various typ
 | number  | 0             |
 | boolean | false         |
 | array   | nothing       |
+
+## Precedences 
+
+Since it's not well defined in the reference, precedence order is (from tightest to loosest):
+- Operators
+- Calls
+- Concatenation
 
 ## Literals
 
@@ -102,3 +110,9 @@ For booleans, any value that can be used to declare one is valid input for parsi
 A prompt can be any expression, it will be evaluated and then printed before asking for input. ex
 `I asked your favorite number "Is you favorite number " guess " "?`. You may also have both `the next <type>` and a 
 prompt, if so, the former proceeds the later. ex: `I asked Applejack the next number "How many apples do you have?"`.
+
+## Arrays
+
+The reference shows arrays being indexed directly, ex: `cake 2`. Unfortunately, this is ambiguous as `cake 2` is a valid
+identifier. Instead, I went with using the call syntax. ex: `I said cake using 2.`,
+`I said cake using my favorite number.`, `cake using 2 is now "apple".`.

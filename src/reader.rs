@@ -296,19 +296,22 @@ fn declare_var(s: &str) -> ReadResult<DeclareVar> {
             preceded(keyword_declare_statement, whitespace1),
             tuple((
                 identifier,
-                preceded(whitespace1, terminated(
-                    map(opt(terminated(keyword_always, whitespace1)), |always| {
-                        always.is_some()
-                    }),
-                    keyword_declare,
-                )),
+                preceded(
+                    whitespace1,
+                    terminated(
+                        map(opt(terminated(keyword_always, whitespace1)), |always| {
+                            always.is_some()
+                        }),
+                        keyword_declare,
+                    ),
+                ),
                 alt((
                     pair(
                         map(preceded(whitespace1, declare_array_type), Some),
-                        opt(preceded(whitespace1, separated_nonempty_list(
-                            whitespace_delim1(tag("and")),
-                            expr(false),
-                        ))),
+                        opt(preceded(
+                            whitespace1,
+                            separated_nonempty_list(whitespace_delim1(tag("and")), expr(false)),
+                        )),
                     ),
                     pair(
                         opt(preceded(whitespace1, declare_type)),
@@ -333,7 +336,10 @@ fn declare_type(s: &str) -> ReadResult<Type> {
 }
 
 fn declare_array_type(s: &str) -> ReadResult<Type> {
-    preceded(opt(terminated(keyword_declare_array_type, whitespace1)), type_array)(s)
+    preceded(
+        opt(terminated(keyword_declare_array_type, whitespace1)),
+        type_array,
+    )(s)
 }
 
 fn type_(s: &str) -> ReadResult<Type> {
@@ -678,11 +684,13 @@ fn return_statement(s: &str) -> ReadResult<Statement> {
 }
 
 fn expr_term<'a>(allow_infix_and: bool) -> impl Fn(&'a str) -> ReadResult<Expr> {
-    alt((
-        prefix_term(allow_infix_and),
-        infix_term(allow_infix_and),
-        value_expr(allow_infix_and),
-    ))
+    move |s| {
+        alt((
+            prefix_term(allow_infix_and),
+            infix_term(allow_infix_and),
+            value_expr(allow_infix_and),
+        ))(s)
+    }
 }
 
 fn expr<'a>(allow_infix_and: bool) -> impl Fn(&'a str) -> ReadResult<Expr> {
@@ -753,7 +761,7 @@ fn call(s: &str) -> ReadResult<Call> {
             identifier,
             opt(preceded(
                 whitespace_delim1(tag("using")),
-                separated_nonempty_list(whitespace_delim1(tag("and")), expr(false)),
+                separated_nonempty_list(whitespace_delim1(tag("and")), expr_term(false)),
             )),
         ),
         |(name, args)| Call(name, args.unwrap_or_else(|| vec![])),
@@ -810,7 +818,6 @@ fn infix_op<'a>(allow_and: bool) -> impl Fn(&'a str) -> ReadResult<BinOperator> 
         infix_sub_op,
         infix_mul_op,
         infix_div_op,
-        map(cond(allow_and, infix_and_op), |op| op.unwrap()),
         infix_or_op,
         infix_lt_op,
         infix_gt_op,
@@ -822,11 +829,20 @@ fn infix_op<'a>(allow_and: bool) -> impl Fn(&'a str) -> ReadResult<BinOperator> 
 }
 
 fn keyword_infix_add<'a>(allow_and: bool) -> impl Fn(&'a str) -> ReadResult<&'a str> {
-    alt((
-        recognize(tuple((tag("added"), whitespace1, tag("to")))),
-        tag("plus"),
-        recognize(cond(allow_and, tag("and"))),
-    ))
+    move |s| {
+        if allow_and {
+            alt((
+                recognize(tuple((tag("added"), whitespace1, tag("to")))),
+                tag("plus"),
+                tag("and"),
+            ))(s)
+        } else {
+            alt((
+                recognize(tuple((tag("added"), whitespace1, tag("to")))),
+                tag("plus"),
+            ))(s)
+        }
+    }
 }
 
 fn infix_add_op<'a>(allow_and: bool) -> impl Fn(&'a str) -> ReadResult<BinOperator> {
@@ -1619,6 +1635,20 @@ fn parses_concat() {
                 Expr::Lit(Literal::Chars("It needs to be about ")),
                 Expr::Lit(Literal::Number(20f64)),
                 Expr::Lit(Literal::Chars("% cooler"))
+            ])
+        ))
+    );
+    assert_eq!(
+        expr(true)("\"but \" my favorite numbers using 3 \" is pretty tasty!\""),
+        Ok((
+            "",
+            Expr::Concat(vec![
+                Expr::Lit(Literal::Chars("but ")),
+                Expr::Call(Call(
+                    "my favorite numbers",
+                    vec![Expr::Lit(Literal::Number(3f64))]
+                )),
+                Expr::Lit(Literal::Chars(" is pretty tasty!"))
             ])
         ))
     );

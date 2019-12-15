@@ -729,9 +729,7 @@ fn send_init_variable<'a, B: Backend>(
                 (type_, value)
             }
         },
-        (None, Some(exprs)) => {
-            send_expression(&exprs[0], sender, vars, function_sender)?
-        }
+        (None, Some(exprs)) => send_expression(&exprs[0], sender, vars, function_sender)?,
         _ => {
             return Err(ReportError::TypeError(
                 "must declare type or value".to_owned(),
@@ -943,10 +941,15 @@ fn send_call<B: Backend>(
             if args.is_empty() {
                 Ok(Some((*type_, *value)))
             } else {
-                Err(ReportError::TypeError(format!(
-                    "Sorry, you can't call an argument: '{}'",
-                    name
-                )))
+                if let Array(element_type) = type_ {
+                    let value = send_index(*value, *element_type, &args[0], sender, vars, function_sender)?;
+                    Ok(Some(((*element_type).into(), value)))
+                } else {
+                    Err(ReportError::TypeError(format!(
+                        "Sorry, you can't call an argument: '{}'",
+                        name
+                    )))
+                }
             }
         }
         Callable::Var(type_, var, _) => {
@@ -954,10 +957,16 @@ fn send_call<B: Backend>(
                 let value = function_sender.builder.use_var(*var);
                 Ok(Some((*type_, value)))
             } else {
-                Err(ReportError::TypeError(format!(
-                    "Sorry, you can't call a variable: '{}'",
-                    name
-                )))
+                if let Array(element_type) = type_ {
+                    let value = function_sender.builder.use_var(*var);
+                    let value = send_index(value, *element_type, &args[0], sender, vars, function_sender)?;
+                    Ok(Some(((*element_type).into(), value)))
+                } else {
+                    Err(ReportError::TypeError(format!(
+                        "Sorry, you can't call a variable: '{}'",
+                        name
+                    )))
+                }
             }
         }
         Callable::Func(type_, arg_types, func_id) => {
@@ -1007,6 +1016,52 @@ fn send_call<B: Backend>(
             }
         }
     }
+}
+
+fn send_index<B: Backend>(
+    array_value: Value,
+    element_type: ArrayType,
+    expr: &Expr,
+    sender: &mut Sender<B>,
+    vars: &Callables,
+    function_sender: &mut FunctionSender,
+) -> ReportResult<Value> {
+    let (expr_type, expr_value) = send_expression(expr, sender, vars, function_sender)?;
+    Number.check(expr_type)?;
+
+    let index = function_sender.builder.ins().fcvt_to_uint(types::I64, expr_value);
+    let one = function_sender.builder.ins().iconst(types::I64, 1);
+    let index = function_sender.builder.ins().isub(index, one); // arrays are one-indexed.
+    let size = function_sender.builder
+        .ins()
+        .load(sender.pointer_type, MemFlags::new(), array_value, 0);
+    let merge_block = function_sender.builder.create_ebb();
+    let cmp = function_sender.builder.ins().icmp(IntCC::UnsignedGreaterThanOrEqual, index, size);
+    function_sender.builder.ins().brz(cmp, merge_block, &[]);
+
+    // TODO: print a useful error.
+    function_sender.builder.ins().trap(TrapCode::User(1));
+
+    function_sender.builder.switch_to_block(merge_block);
+    function_sender.builder.seal_block(merge_block);
+
+    let array = function_sender.builder.ins().load(
+        sender.pointer_type,
+        MemFlags::new(),
+        array_value,
+        (sender.pointer_type.bytes() * 2) as i32,
+    );
+    let offset = function_sender.builder
+        .ins()
+        .imul_imm(index, ir_type(sender.pointer_type, element_type.into()).bytes() as i64);
+    let value = function_sender.builder.ins().load_complex(
+        ir_type(sender.pointer_type, element_type.into()),
+        MemFlags::new(),
+        &[array, offset],
+        0,
+    );
+
+    Ok(value)
 }
 
 fn send_return<B: Backend>(
@@ -1132,10 +1187,10 @@ fn send_array_expression<'a, B: Backend>(
           + sender.pointer_type.bytes() as i64, // pointer to data
     );
     let array_header = alloc(array_header_size, 1, sender, &mut function_sender.builder)?;
-    let element_size = function_sender
-        .builder
-        .ins()
-        .iconst(sender.pointer_type, (ir_type(sender.pointer_type, element_type.into())).bytes() as i64);
+    let element_size = function_sender.builder.ins().iconst(
+        sender.pointer_type,
+        (ir_type(sender.pointer_type, element_type.into())).bytes() as i64,
+    );
     let array = alloc(
         element_size,
         exprs.len() as i64,
@@ -1738,11 +1793,13 @@ fn array_to_string<B: Backend>(
 
     let offset = builder
         .ins()
-        .imul_imm(index, sender.pointer_type.bytes() as i64);
-    let value =
-        builder
-            .ins()
-            .load_complex(ir_type(sender.pointer_type, type_.into()), MemFlags::new(), &[array, offset], 0);
+        .imul_imm(index, ir_type(sender.pointer_type, type_.into()).bytes() as i64);
+    let value = builder.ins().load_complex(
+        ir_type(sender.pointer_type, type_.into()),
+        MemFlags::new(),
+        &[array, offset],
+        0,
+    );
     let str_value = send_value_to_string(type_.into(), value, sender, builder)?;
 
     concat_strings(buff, buff_size, str_value, sender, builder)?;
@@ -1752,7 +1809,7 @@ fn array_to_string<B: Backend>(
     let cmp = builder.ins().icmp(IntCC::NotEqual, index, last_index);
     builder.ins().brz(cmp, merge_block, &[]);
 
-    let sep =  reference_constant_string(" and ", sender, builder)?;
+    let sep = reference_constant_string(" and ", sender, builder)?;
     concat_strings(buff, buff_size, sep, sender, builder)?;
     builder.ins().jump(merge_block, &[]);
 
