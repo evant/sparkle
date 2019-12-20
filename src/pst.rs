@@ -14,7 +14,7 @@ pub struct Paragraph<'a> {
 pub enum Statement<'a> {
     Print(Expr<'a>),
     Declare(DeclareVar<'a>),
-    Assign(Variable<'a>, Expr<'a>),
+    Assign(LValue<'a>, Expr<'a>),
     Increment(Variable<'a>),
     Decrement(Variable<'a>),
     If(Expr<'a>, Vec<Statement<'a>>, Vec<Statement<'a>>),
@@ -22,7 +22,7 @@ pub enum Statement<'a> {
     DoWhile(Expr<'a>, Vec<Statement<'a>>),
     Call(Call<'a>),
     Return(Expr<'a>),
-    Read(Variable<'a>, Option<Type>, Option<Expr<'a>>),
+    Read(LValue<'a>, Option<Type>, Option<Expr<'a>>),
 }
 
 #[derive(Debug, PartialEq)]
@@ -61,6 +61,12 @@ pub struct Index<'a>(pub &'a str, pub Box<Expr<'a>>);
 
 #[derive(Debug, PartialEq, Eq, Hash, Clone)]
 pub struct Variable<'a>(pub &'a str);
+
+#[derive(Debug, PartialEq, Clone)]
+pub enum LValue<'a> {
+    Variable(&'a str),
+    Index(Index<'a>),
+}
 
 #[derive(Debug, PartialEq, Clone)]
 pub enum Expr<'a> {

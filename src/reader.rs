@@ -10,8 +10,8 @@ use nom::IResult;
 
 use crate::error::ReportError;
 use crate::pst::{
-    Arg, BinOperator, Call, Declaration, DeclareVar, Expr, Index, Literal, Paragraph, Report,
-    Statement, Variable,
+    Arg, BinOperator, Call, Declaration, DeclareVar, Expr, Index, LValue, Literal, Paragraph,
+    Report, Statement, Variable,
 };
 use crate::types::Type::{Array, Boolean, Chars, Number};
 use crate::types::{ArrayType, Type};
@@ -255,12 +255,12 @@ fn read_statement(s: &str) -> ReadResult<Statement> {
         preceded(
             preceded(keyword_read, whitespace1),
             tuple((
-                var,
+                identifier,
                 opt(preceded(whitespace_delim1(keyword_the_next), type_)),
                 opt(preceded(whitespace1, expr(true))),
             )),
         ),
-        |(var, type_, prompt)| Statement::Read(var, type_, prompt),
+        |(var, type_, prompt)| Statement::Read(LValue::Variable(var), type_, prompt),
     )(s)
 }
 
@@ -327,9 +327,13 @@ fn declare_var(s: &str) -> ReadResult<DeclareVar> {
 
 fn assign_statement(s: &str) -> ReadResult<Statement> {
     map(
-        separated_pair(var, whitespace_delim(keyword_assign), expr(true)),
+        separated_pair(lvalue, whitespace_delim(keyword_assign), expr(true)),
         |(var, expr)| Statement::Assign(var, expr),
     )(s)
+}
+
+fn lvalue(s: &str) -> ReadResult<LValue> {
+    alt((map(index, LValue::Index), map(identifier, LValue::Variable)))(s)
 }
 
 fn declare_type(s: &str) -> ReadResult<Type> {
@@ -782,7 +786,8 @@ fn index(s: &str) -> ReadResult<Index> {
     map(
         pair(
             identifier,
-            preceded(whitespace_delim1(keyword_at), expr_term(true)),
+            //TODO: figure out how to allow arbitrary expressions, right now the `is` operator eats part of the `is now` token.
+            preceded(whitespace_delim1(keyword_at), value_expr(true)),
         ),
         |(i, expr)| Index(i, Box::new(expr)),
     )(s)
@@ -1774,7 +1779,10 @@ fn parses_assign_statement() {
         statement("Spike's age is now 11!"),
         Ok((
             "",
-            Statement::Assign(Variable("Spike's age"), Expr::Lit(Literal::Number(11f64)))
+            Statement::Assign(
+                LValue::Variable("Spike's age"),
+                Expr::Lit(Literal::Number(11f64))
+            )
         ))
     );
     assert_eq!(
@@ -1782,12 +1790,25 @@ fn parses_assign_statement() {
         Ok((
             "",
             Statement::Assign(
-                Variable("Spike's age"),
+                LValue::Variable("Spike's age"),
                 Expr::BinOp(
                     BinOperator::AddOrAnd,
                     Box::new(Expr::Lit(Literal::Number(10f64))),
                     Box::new(Expr::Lit(Literal::Number(1f64))),
                 ),
+            )
+        ))
+    );
+    assert_eq!(
+        statement("my cakes at 1 is now \"pumpkin\""),
+        Ok((
+            "",
+            Statement::Assign(
+                LValue::Index(Index(
+                    "my cakes",
+                    Box::new(Expr::Lit(Literal::Number(1f64)))
+                )),
+                Expr::Lit(Literal::Chars("pumpkin"))
             )
         ))
     );
@@ -1945,14 +1966,14 @@ fn parses_read_statement() {
         statement("I heard Applejack's speech."),
         Ok((
             "",
-            Statement::Read(Variable("Applejack's speech"), None, None)
+            Statement::Read(LValue::Variable("Applejack's speech"), None, None)
         ))
     );
     assert_eq!(
         statement("I read Twilight the next number."),
         Ok((
             "",
-            Statement::Read(Variable("Twilight"), Some(Number), None)
+            Statement::Read(LValue::Variable("Twilight"), Some(Number), None)
         ))
     );
     assert_eq!(
@@ -1960,7 +1981,7 @@ fn parses_read_statement() {
         Ok((
             "",
             Statement::Read(
-                Variable("Spike"),
+                LValue::Variable("Spike"),
                 None,
                 Some(Expr::Lit(Literal::Chars("How many gems are left?"))),
             )
@@ -1971,7 +1992,7 @@ fn parses_read_statement() {
         Ok((
             "",
             Statement::Read(
-                Variable("Applejack"),
+                LValue::Variable("Applejack"),
                 Some(Number),
                 Some(Expr::Lit(Literal::Chars("How many apples do you have?"))),
             )

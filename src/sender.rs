@@ -14,8 +14,8 @@ use target_lexicon::{OperatingSystem, Triple};
 use crate::error::ReportError;
 use crate::pst;
 use crate::pst::{
-    Arg, BinOperator, Call, Declaration, DeclareVar, Expr, Index, Literal, Paragraph, Report,
-    Statement,
+    Arg, BinOperator, Call, Declaration, DeclareVar, Expr, Index, LValue, Literal, Paragraph,
+    Report, Statement,
 };
 use crate::types::Type::{Array, Boolean, Chars, Number};
 use crate::vars::{Callable, Callables};
@@ -28,6 +28,7 @@ use std::ffi::{CStr, CString};
 use std::io::Write;
 use std::os::raw::c_char;
 use std::path::Path;
+use std::process::exit;
 
 type ReportResult<T> = Result<T, ReportError>;
 
@@ -270,7 +271,8 @@ fn send_declare_global<'a, B: Backend>(
     function_sender: &mut FunctionSender,
 ) -> ReportResult<()> {
     let DeclareVar(pst::Variable(name), type_, expr, is_const) = declare_var;
-    let (type_, _value) = send_init_variable(*type_, expr, sender, globals, function_sender)?;
+    let (type_, _value) =
+        send_init_variable(*type_, expr, *is_const, sender, globals, function_sender)?;
 
     sender
         .data_context
@@ -581,14 +583,14 @@ fn print<B: Backend>(
 }
 
 fn send_read_statement<'a, B: Backend>(
-    var: &'a pst::Variable<'a>,
+    var: &LValue<'a>,
     declared_type: &Option<crate::types::Type>,
     prompt: &Option<Expr<'a>>,
     sender: &mut Sender<B>,
     vars: &mut Callables<'a>,
     function_sender: &mut FunctionSender,
 ) -> ReportResult<()> {
-    send_write_var_statement(
+    send_write_lvalue_statement(
         var,
         sender,
         vars,
@@ -686,7 +688,7 @@ fn send_declare_statement<'a, B: Backend>(
     function_sender: &mut FunctionSender,
 ) -> ReportResult<()> {
     let pst::Variable(name) = var;
-    let (type_, value) = send_init_variable(type_, expr, sender, vars, function_sender)?;
+    let (type_, value) = send_init_variable(type_, expr, is_const, sender, vars, function_sender)?;
 
     let var = vars.new_variable();
     vars.insert(name, Callable::Var(type_, var, is_const));
@@ -702,6 +704,7 @@ fn send_declare_statement<'a, B: Backend>(
 fn send_init_variable<'a, B: Backend>(
     type_: Option<crate::types::Type>,
     exprs: &Option<Vec<Expr<'a>>>,
+    is_const: bool,
     sender: &mut Sender<B>,
     vars: &mut Callables<'a>,
     function_sender: &mut FunctionSender,
@@ -711,7 +714,14 @@ fn send_init_variable<'a, B: Backend>(
             let (expr_type, value) = if exprs.len() > 1 {
                 // type must be an array
                 if let Array(element_type) = type_ {
-                    send_array_expression(element_type, exprs, sender, vars, function_sender)?
+                    send_array_expression(
+                        element_type,
+                        exprs,
+                        is_const,
+                        sender,
+                        vars,
+                        function_sender,
+                    )?
                 } else {
                     return Err(ReportError::TypeError("expected array".to_string()));
                 }
@@ -741,13 +751,13 @@ fn send_init_variable<'a, B: Backend>(
 }
 
 fn send_assign_statement<'a, B: Backend>(
-    var: &pst::Variable<'a>,
+    var: &LValue<'a>,
     expr: &Expr<'a>,
     sender: &mut Sender<B>,
     vars: &Callables,
     function_sender: &mut FunctionSender,
 ) -> ReportResult<()> {
-    send_write_var_statement(
+    send_write_lvalue_statement(
         var,
         sender,
         vars,
@@ -758,8 +768,8 @@ fn send_assign_statement<'a, B: Backend>(
     Ok(())
 }
 
-fn send_write_var_statement<'a, B: Backend>(
-    var: &pst::Variable<'a>,
+fn send_write_lvalue_statement<'a, B: Backend>(
+    var: &LValue<'a>,
     sender: &mut Sender<B>,
     vars: &Callables,
     function_sender: &mut FunctionSender,
@@ -770,48 +780,121 @@ fn send_write_var_statement<'a, B: Backend>(
         &mut FunctionSender,
     ) -> ReportResult<(crate::types::Type, Value)>,
 ) -> ReportResult<()> {
-    let pst::Variable(name) = var;
-    match vars.get(name)? {
-        Callable::Arg(_, _) => Err(ReportError::TypeError(format!(
-            "Sorry, you can't assign to an argument '{}",
-            name
-        ))),
-        Callable::Func(_, _, _) => Err(ReportError::TypeError(format!(
-            "Sorry, you can't assign to a paragraph '{}'",
-            name
-        ))),
-        Callable::Var(type_, var, is_const) => {
-            let (value_type, value) = f(*type_, sender, vars, function_sender)?;
-            type_.check(value_type)?;
-            if *is_const {
-                return Err(ReportError::TypeError(format!(
-                    "Nopony can change what is always true: '{}'",
-                    name
-                )));
+    match var {
+        LValue::Variable(name) => match vars.get(name)? {
+            Callable::Arg(_, _) => Err(ReportError::TypeError(format!(
+                "Sorry, you can't assign to an argument '{}",
+                name
+            ))),
+            Callable::Func(_, _, _) => Err(ReportError::TypeError(format!(
+                "Sorry, you can't assign to a paragraph '{}'",
+                name
+            ))),
+            Callable::Var(type_, var, is_const) => {
+                let (value_type, value) = f(*type_, sender, vars, function_sender)?;
+                type_.check(value_type)?;
+                if *is_const {
+                    return Err(ReportError::TypeError(format!(
+                        "Nopony can change what is always true: '{}'",
+                        name
+                    )));
+                }
+                function_sender.builder.def_var(*var, value);
+                Ok(())
             }
-            function_sender.builder.def_var(*var, value);
-            Ok(())
-        }
-        Callable::Global(type_, id, is_const) => {
-            let (value_type, value) = f(*type_, sender, vars, function_sender)?;
-            type_.check(value_type)?;
-            if *is_const {
-                return Err(ReportError::TypeError(format!(
-                    "Nopony can change what is always true: '{}'",
-                    name
-                )));
+            Callable::Global(type_, id, is_const) => {
+                let (value_type, value) = f(*type_, sender, vars, function_sender)?;
+                type_.check(value_type)?;
+                if *is_const {
+                    return Err(ReportError::TypeError(format!(
+                        "Nopony can change what is always true: '{}'",
+                        name
+                    )));
+                }
+                let local_id = sender
+                    .module
+                    .declare_data_in_func(*id, function_sender.builder.func);
+                let addr = function_sender
+                    .builder
+                    .ins()
+                    .global_value(sender.pointer_type, local_id);
+                function_sender
+                    .builder
+                    .ins()
+                    .store(MemFlags::new(), value, addr, 0);
+                Ok(())
             }
-            let local_id = sender
-                .module
-                .declare_data_in_func(*id, function_sender.builder.func);
-            let addr = function_sender
+        },
+        LValue::Index(Index(name, expr)) => {
+            let (expr_type, expr_value) = send_expression(expr, sender, vars, function_sender)?;
+            Number.check(expr_type)?;
+
+            let callable = vars.get(name)?;
+            let (element_type, array_value) =
+                if let Some((type_, value)) = send_var(callable, sender, &mut function_sender.builder) {
+                    if let Array(element_type) = type_ {
+                        (element_type, value)
+                    } else {
+                        return Err(ReportError::TypeError(format!(
+                            "Sorry, you can only index into an array, not a {}",
+                            type_
+                        )));
+                    }
+                } else {
+                    return Err(ReportError::TypeError(format!(
+                        "Sorry use must call a paragraph, not index it"
+                    )));
+                };
+
+            let index = function_sender
                 .builder
                 .ins()
-                .global_value(sender.pointer_type, local_id);
-            function_sender
+                .fcvt_to_uint(types::I64, expr_value);
+            let one = function_sender.builder.ins().iconst(types::I64, 1);
+            let index = function_sender.builder.ins().isub(index, one); // arrays are one-indexed.
+
+            let size =
+                function_sender
+                    .builder
+                    .ins()
+                    .load(sender.pointer_type, MemFlags::new(), array_value, 0);
+            let merge_block = function_sender.builder.create_ebb();
+            let cmp = function_sender
                 .builder
                 .ins()
-                .store(MemFlags::new(), value, addr, 0);
+                .icmp(IntCC::UnsignedGreaterThanOrEqual, index, size);
+            function_sender.builder.ins().brz(cmp, merge_block, &[]);
+
+            // TODO: print a useful error.
+            function_sender.builder.ins().trap(TrapCode::User(1));
+
+            function_sender.builder.switch_to_block(merge_block);
+            function_sender.builder.seal_block(merge_block);
+
+            //TODO: check if const
+
+            let array = function_sender.builder.ins().load(
+                sender.pointer_type,
+                MemFlags::new(),
+                array_value,
+                sender.pointer_type.bytes() as i32,
+            );
+
+            let type_ = element_type.into();
+            let (value_type, value) = f(type_, sender, vars, function_sender)?;
+            type_.check(value_type)?;
+
+            let offset = function_sender.builder.ins().imul_imm(
+                index,
+                ir_type(sender.pointer_type, type_).bytes() as i64,
+            );
+            function_sender.builder.ins().store_complex(
+                MemFlags::new(),
+                value,
+                &[array, offset],
+                0
+            );
+
             Ok(())
         }
     }
@@ -941,7 +1024,7 @@ fn send_call<B: Backend>(
 
     if args.is_empty() {
         if let Some((type_, value)) = send_var(callable, sender, &mut function_sender.builder) {
-            return Ok(Some((type_, value)))
+            return Ok(Some((type_, value)));
         }
     }
 
@@ -988,20 +1071,21 @@ fn send_index<B: Backend>(
     Number.check(expr_type)?;
 
     let callable = vars.get(name)?;
-    let (element_type, array_value) = if let Some((type_, value)) = send_var(callable, sender, &mut function_sender.builder) {
-        if let Array(element_type) = type_ {
-            (element_type, value)
+    let (element_type, array_value) =
+        if let Some((type_, value)) = send_var(callable, sender, &mut function_sender.builder) {
+            if let Array(element_type) = type_ {
+                (element_type, value)
+            } else {
+                return Err(ReportError::TypeError(format!(
+                    "Sorry, you can only index into an array, not a {}",
+                    type_
+                )));
+            }
         } else {
             return Err(ReportError::TypeError(format!(
-                "Sorry, you can only index into an array, not a {}",
-                type_
+                "Sorry use must call a paragraph, not index it"
             )));
-        }
-    } else {
-        return Err(ReportError::TypeError(format!(
-            "Sorry use must call a paragraph, not index it"
-        )));
-    };
+        };
 
     let index = function_sender
         .builder
@@ -1031,7 +1115,7 @@ fn send_index<B: Backend>(
         sender.pointer_type,
         MemFlags::new(),
         array_value,
-        (sender.pointer_type.bytes() * 2) as i32,
+        sender.pointer_type.bytes() as i32,
     );
     let offset = function_sender.builder.ins().imul_imm(
         index,
@@ -1158,28 +1242,44 @@ fn send_update_var_statement<'a, 'b, B: Backend>(
 fn send_array_expression<'a, B: Backend>(
     element_type: crate::types::ArrayType,
     exprs: &Vec<Expr<'a>>,
+    is_const: bool,
     sender: &mut Sender<B>,
     vars: &Callables,
     function_sender: &mut FunctionSender,
 ) -> ReportResult<(crate::types::Type, Value)> {
     let mut iter = exprs.iter();
 
-    let array_header_size = function_sender.builder.ins().iconst(
-        sender.pointer_type,
-        (sender.pointer_type.bytes() * 2) as i64 // size, capacity
-          + sender.pointer_type.bytes() as i64, // pointer to data
-    );
+    let array_header_alloc_size = if is_const {
+        // size, pointer to data, data
+        sender.pointer_type.bytes() as i64 * 2
+            + exprs.len() as i64 * ir_type(sender.pointer_type, element_type.into()).bytes() as i64
+    } else {
+        // size, pointer to data, capacity
+        sender.pointer_type.bytes() as i64 * 3
+    };
+
+    let array_header_size = function_sender
+        .builder
+        .ins()
+        .iconst(sender.pointer_type, array_header_alloc_size);
     let array_header = alloc(array_header_size, 1, sender, &mut function_sender.builder)?;
     let element_size = function_sender.builder.ins().iconst(
         sender.pointer_type,
         (ir_type(sender.pointer_type, element_type.into())).bytes() as i64,
     );
-    let array = alloc(
-        element_size,
-        exprs.len() as i64,
-        sender,
-        &mut function_sender.builder,
-    )?;
+    let array = if is_const {
+        function_sender
+            .builder
+            .ins()
+            .iadd_imm(array_header, (sender.pointer_type.bytes() * 2) as i64)
+    } else {
+        alloc(
+            element_size,
+            exprs.len() as i64,
+            sender,
+            &mut function_sender.builder,
+        )?
+    };
     let size = function_sender
         .builder
         .ins()
@@ -1190,13 +1290,13 @@ fn send_array_expression<'a, B: Backend>(
         .store(MemFlags::new(), size, array_header, 0);
     function_sender.builder.ins().store(
         MemFlags::new(),
-        size,
+        array,
         array_header,
         sender.pointer_type.bytes() as i32,
     );
     function_sender.builder.ins().store(
         MemFlags::new(),
-        array,
+        size,
         array_header,
         (sender.pointer_type.bytes() * 2) as i32,
     );
@@ -1690,7 +1790,7 @@ fn array_to_string<B: Backend>(
         sender.pointer_type,
         MemFlags::new(),
         array_value,
-        (sender.pointer_type.bytes() * 2) as i32,
+        sender.pointer_type.bytes() as i32,
     );
 
     let zero = builder.ins().iconst(sender.pointer_type, 0);
@@ -2024,9 +2124,7 @@ fn send_var<B: Backend>(
             Some((*type_, value))
         }
         Callable::Global(type_, id, _) => {
-            let local_id = sender
-                .module
-                .declare_data_in_func(*id, builder.func);
+            let local_id = sender.module.declare_data_in_func(*id, builder.func);
             let ir_type = ir_type(sender.pointer_type, *type_);
             let addr = builder.ins().global_value(sender.pointer_type, local_id);
             let value = builder.ins().load(ir_type, MemFlags::new(), addr, 0);

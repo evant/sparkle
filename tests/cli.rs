@@ -176,7 +176,8 @@ fn cakes() -> TestResult {
     cmd.assert().success().stdout(
         "I can bake chocolate and apple cinnamon and fruit cakes!\n\
          My favorite numbers are 1 and 2 and 3.14 and 4 and ok all of them are my favorites!\n\
-         but 3.14 is pretty tasty!\n"
+         but 3.14 is pretty tasty!\n\
+         Now I can bake pumpkin and carrot and sponge cakes!\n"
     );
 
     Ok(())
