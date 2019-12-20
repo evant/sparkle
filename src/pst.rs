@@ -56,6 +56,9 @@ pub enum Literal<'a> {
 #[derive(Debug, PartialEq, Clone)]
 pub struct Call<'a>(pub &'a str, pub Vec<Expr<'a>>);
 
+#[derive(Debug, PartialEq, Clone)]
+pub struct Index<'a>(pub &'a str, pub Box<Expr<'a>>);
+
 #[derive(Debug, PartialEq, Eq, Hash, Clone)]
 pub struct Variable<'a>(pub &'a str);
 
@@ -66,6 +69,7 @@ pub enum Expr<'a> {
     Concat(Vec<Expr<'a>>),
     Lit(Literal<'a>),
     Call(Call<'a>),
+    Index(Index<'a>),
 }
 
 #[derive(Debug, PartialEq, Clone)]

@@ -10,8 +10,8 @@ use nom::IResult;
 
 use crate::error::ReportError;
 use crate::pst::{
-    Arg, BinOperator, Call, Declaration, DeclareVar, Expr, Literal, Paragraph, Report, Statement,
-    Variable,
+    Arg, BinOperator, Call, Declaration, DeclareVar, Expr, Index, Literal, Paragraph, Report,
+    Statement, Variable,
 };
 use crate::types::Type::{Array, Boolean, Chars, Number};
 use crate::types::{ArrayType, Type};
@@ -42,6 +42,7 @@ fn keyword(s: &str) -> ReadResult<&str> {
         keyword_decrement,
         keyword_declare_paragraph_type,
         keyword_using,
+        keyword_at,
         keyword_the_next,
     ))(s)
 }
@@ -427,6 +428,7 @@ fn keyword_declare(s: &str) -> ReadResult<&str> {
         tag("was"),
         tag("has"),
         tag("had"),
+        tag("have"),
         tag("likes"),
         tag("like"),
         tag("liked"),
@@ -743,8 +745,12 @@ fn call_expr(s: &str) -> ReadResult<Expr> {
     map(call, Expr::Call)(s)
 }
 
+fn index_expr(s: &str) -> ReadResult<Expr> {
+    map(index, Expr::Index)(s)
+}
+
 fn value_expr<'a>(allow_infix_and: bool) -> impl Fn(&'a str) -> ReadResult<Expr> {
-    alt((prefix_not(allow_infix_and), lit_expr, call_expr))
+    alt((prefix_not(allow_infix_and), lit_expr, index_expr, call_expr))
 }
 
 fn literal(s: &str) -> ReadResult<Literal> {
@@ -760,11 +766,25 @@ fn call(s: &str) -> ReadResult<Call> {
         pair(
             identifier,
             opt(preceded(
-                whitespace_delim1(tag("using")),
+                whitespace_delim1(keyword_using),
                 separated_nonempty_list(whitespace_delim1(tag("and")), expr_term(false)),
             )),
         ),
         |(name, args)| Call(name, args.unwrap_or_else(|| vec![])),
+    )(s)
+}
+
+fn keyword_at(s: &str) -> ReadResult<&str> {
+    tag("at")(s)
+}
+
+fn index(s: &str) -> ReadResult<Index> {
+    map(
+        pair(
+            identifier,
+            preceded(whitespace_delim1(keyword_at), expr_term(true)),
+        ),
+        |(i, expr)| Index(i, Box::new(expr)),
     )(s)
 }
 
@@ -1736,10 +1756,10 @@ fn parses_declare_statement() {
         ))
     );
     assert_eq!(
-        statement("Did you know that cake has the names \"chocolate\" and \"apple cinnamon\" and \"fruit\"?"),
+        statement("Did you know that my cakes have the names \"chocolate\" and \"apple cinnamon\" and \"fruit\"!?"),
         Ok((
             "",
-            Statement::Declare(DeclareVar(Variable("cake"), Some(Array(ArrayType::Chars)), Some(vec![
+            Statement::Declare(DeclareVar(Variable("my cakes"), Some(Array(ArrayType::Chars)), Some(vec![
                 Expr::Lit(Literal::Chars("chocolate")),
                 Expr::Lit(Literal::Chars("apple cinnamon")),
                 Expr::Lit(Literal::Chars("fruit")),
@@ -1895,6 +1915,20 @@ fn parses_call_expr() {
             ))
         ))
     )
+}
+
+#[test]
+fn parses_index_expr() {
+    assert_eq!(
+        expr(true)("my cakes at 1"),
+        Ok((
+            "",
+            Expr::Index(Index(
+                "my cakes",
+                Box::new(Expr::Lit(Literal::Number(1f64)))
+            ))
+        ))
+    );
 }
 
 #[test]

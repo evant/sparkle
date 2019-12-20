@@ -14,7 +14,8 @@ use target_lexicon::{OperatingSystem, Triple};
 use crate::error::ReportError;
 use crate::pst;
 use crate::pst::{
-    Arg, BinOperator, Call, Declaration, DeclareVar, Expr, Literal, Paragraph, Report, Statement,
+    Arg, BinOperator, Call, Declaration, DeclareVar, Expr, Index, Literal, Paragraph, Report,
+    Statement,
 };
 use crate::types::Type::{Array, Boolean, Chars, Number};
 use crate::vars::{Callable, Callables};
@@ -936,107 +937,88 @@ fn send_call<B: Backend>(
     function_sender: &mut FunctionSender,
 ) -> ReportResult<Option<(crate::types::Type, Value)>> {
     let Call(name, args) = call;
-    match vars.get(name)? {
-        Callable::Arg(type_, value) => {
-            if args.is_empty() {
-                Ok(Some((*type_, *value)))
-            } else {
-                if let Array(element_type) = type_ {
-                    let value = send_index(*value, *element_type, &args[0], sender, vars, function_sender)?;
-                    Ok(Some(((*element_type).into(), value)))
-                } else {
-                    Err(ReportError::TypeError(format!(
-                        "Sorry, you can't call an argument: '{}'",
-                        name
-                    )))
-                }
-            }
-        }
-        Callable::Var(type_, var, _) => {
-            if args.is_empty() {
-                let value = function_sender.builder.use_var(*var);
-                Ok(Some((*type_, value)))
-            } else {
-                if let Array(element_type) = type_ {
-                    let value = function_sender.builder.use_var(*var);
-                    let value = send_index(value, *element_type, &args[0], sender, vars, function_sender)?;
-                    Ok(Some(((*element_type).into(), value)))
-                } else {
-                    Err(ReportError::TypeError(format!(
-                        "Sorry, you can't call a variable: '{}'",
-                        name
-                    )))
-                }
-            }
-        }
-        Callable::Func(type_, arg_types, func_id) => {
-            let mut arg_values = vec![];
-            for (arg, arg_type) in args.iter().zip(arg_types) {
-                let (expr_type, expr_value) = send_expression(arg, sender, vars, function_sender)?;
-                arg_type.check(expr_type)?;
-                arg_values.push(expr_value);
-            }
+    let callable = vars.get(name)?;
 
-            let local_callee = sender
-                .module
-                .declare_func_in_func(*func_id, &mut function_sender.builder.func);
-            let result = function_sender
-                .builder
-                .ins()
-                .call(local_callee, &arg_values);
+    if args.is_empty() {
+        if let Some((type_, value)) = send_var(callable, sender, &mut function_sender.builder) {
+            return Ok(Some((type_, value)))
+        }
+    }
 
-            match type_ {
-                None => Ok(None),
-                Some(t) => {
-                    let v = function_sender.builder.inst_results(result)[0];
-                    Ok(Some((*t, v)))
-                }
+    if let Callable::Func(type_, arg_types, func_id) = callable {
+        let mut arg_values = vec![];
+        for (arg, arg_type) in args.iter().zip(arg_types) {
+            let (expr_type, expr_value) = send_expression(arg, sender, vars, function_sender)?;
+            arg_type.check(expr_type)?;
+            arg_values.push(expr_value);
+        }
+
+        let local_callee = sender
+            .module
+            .declare_func_in_func(*func_id, &mut function_sender.builder.func);
+        let result = function_sender
+            .builder
+            .ins()
+            .call(local_callee, &arg_values);
+
+        match type_ {
+            None => Ok(None),
+            Some(t) => {
+                let v = function_sender.builder.inst_results(result)[0];
+                Ok(Some((*t, v)))
             }
         }
-        Callable::Global(type_, id, _) => {
-            if args.is_empty() {
-                let local_id = sender
-                    .module
-                    .declare_data_in_func(*id, function_sender.builder.func);
-                let ir_type = ir_type(sender.pointer_type, *type_);
-                let addr = function_sender
-                    .builder
-                    .ins()
-                    .global_value(sender.pointer_type, local_id);
-                let value = function_sender
-                    .builder
-                    .ins()
-                    .load(ir_type, MemFlags::new(), addr, 0);
-                Ok(Some((*type_, value)))
-            } else {
-                Err(ReportError::TypeError(format!(
-                    "Sorry, you can't call a variable: '{}'",
-                    name
-                )))
-            }
-        }
+    } else {
+        return Err(ReportError::TypeError(format!(
+            "Sorry, you can't call a variable: '{}'",
+            name
+        )));
     }
 }
 
 fn send_index<B: Backend>(
-    array_value: Value,
-    element_type: ArrayType,
-    expr: &Expr,
+    index: &Index,
     sender: &mut Sender<B>,
     vars: &Callables,
     function_sender: &mut FunctionSender,
-) -> ReportResult<Value> {
-    let (expr_type, expr_value) = send_expression(expr, sender, vars, function_sender)?;
+) -> ReportResult<(crate::types::Type, Value)> {
+    let Index(name, index_expr) = index;
+
+    let (expr_type, expr_value) = send_expression(index_expr, sender, vars, function_sender)?;
     Number.check(expr_type)?;
 
-    let index = function_sender.builder.ins().fcvt_to_uint(types::I64, expr_value);
+    let callable = vars.get(name)?;
+    let (element_type, array_value) = if let Some((type_, value)) = send_var(callable, sender, &mut function_sender.builder) {
+        if let Array(element_type) = type_ {
+            (element_type, value)
+        } else {
+            return Err(ReportError::TypeError(format!(
+                "Sorry, you can only index into an array, not a {}",
+                type_
+            )));
+        }
+    } else {
+        return Err(ReportError::TypeError(format!(
+            "Sorry use must call a paragraph, not index it"
+        )));
+    };
+
+    let index = function_sender
+        .builder
+        .ins()
+        .fcvt_to_uint(types::I64, expr_value);
     let one = function_sender.builder.ins().iconst(types::I64, 1);
     let index = function_sender.builder.ins().isub(index, one); // arrays are one-indexed.
-    let size = function_sender.builder
-        .ins()
-        .load(sender.pointer_type, MemFlags::new(), array_value, 0);
+    let size =
+        function_sender
+            .builder
+            .ins()
+            .load(sender.pointer_type, MemFlags::new(), array_value, 0);
     let merge_block = function_sender.builder.create_ebb();
-    let cmp = function_sender.builder.ins().icmp(IntCC::UnsignedGreaterThanOrEqual, index, size);
+    let cmp = function_sender
+        .builder
+        .ins()
+        .icmp(IntCC::UnsignedGreaterThanOrEqual, index, size);
     function_sender.builder.ins().brz(cmp, merge_block, &[]);
 
     // TODO: print a useful error.
@@ -1051,9 +1033,10 @@ fn send_index<B: Backend>(
         array_value,
         (sender.pointer_type.bytes() * 2) as i32,
     );
-    let offset = function_sender.builder
-        .ins()
-        .imul_imm(index, ir_type(sender.pointer_type, element_type.into()).bytes() as i64);
+    let offset = function_sender.builder.ins().imul_imm(
+        index,
+        ir_type(sender.pointer_type, element_type.into()).bytes() as i64,
+    );
     let value = function_sender.builder.ins().load_complex(
         ir_type(sender.pointer_type, element_type.into()),
         MemFlags::new(),
@@ -1061,7 +1044,7 @@ fn send_index<B: Backend>(
         0,
     );
 
-    Ok(value)
+    Ok((element_type.into(), value))
 }
 
 fn send_return<B: Backend>(
@@ -1415,6 +1398,7 @@ fn send_expression<'a, B: Backend>(
                 call.0
             ))
         })?,
+        Expr::Index(index) => send_index(index, sender, vars, function_sender)?,
     };
 
     Ok(result)
@@ -1791,9 +1775,10 @@ fn array_to_string<B: Backend>(
     let cmp = builder.ins().icmp(IntCC::UnsignedLessThan, index, size);
     builder.ins().brz(cmp, exit_block, &[]);
 
-    let offset = builder
-        .ins()
-        .imul_imm(index, ir_type(sender.pointer_type, type_.into()).bytes() as i64);
+    let offset = builder.ins().imul_imm(
+        index,
+        ir_type(sender.pointer_type, type_.into()).bytes() as i64,
+    );
     let value = builder.ins().load_complex(
         ir_type(sender.pointer_type, type_.into()),
         MemFlags::new(),
@@ -2024,5 +2009,29 @@ fn ir_type(pointer_type: Type, type_: crate::types::Type) -> Type {
         // https://github.com/bytecodealliance/cranelift/issues/1117
         Boolean => types::I32,
         Array(_) => pointer_type,
+    }
+}
+
+fn send_var<B: Backend>(
+    callable: &Callable,
+    sender: &Sender<B>,
+    builder: &mut FunctionBuilder,
+) -> Option<(crate::types::Type, Value)> {
+    match callable {
+        Callable::Arg(type_, value) => Some((*type_, *value)),
+        Callable::Var(type_, var, _) => {
+            let value = builder.use_var(*var);
+            Some((*type_, value))
+        }
+        Callable::Global(type_, id, _) => {
+            let local_id = sender
+                .module
+                .declare_data_in_func(*id, builder.func);
+            let ir_type = ir_type(sender.pointer_type, *type_);
+            let addr = builder.ins().global_value(sender.pointer_type, local_id);
+            let value = builder.ins().load(ir_type, MemFlags::new(), addr, 0);
+            Some((*type_, value))
+        }
+        Callable::Func(_, _, _) => None,
     }
 }

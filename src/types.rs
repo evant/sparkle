@@ -48,7 +48,7 @@ impl Type {
             Ok(())
         } else {
             Err(ReportError::TypeError(format!(
-                "expected {} but got {}",
+                "Sorry, I expected a {} but you gave me a {}",
                 self, actual_type
             )))
         }
@@ -85,7 +85,7 @@ impl TryInto<ArrayType> for Type {
             Type::Boolean => ArrayType::Boolean,
             Type::Array(_) => {
                 return Err(ReportError::TypeError(
-                    "cannot store arrays in arrays".to_string(),
+                    "Sorry, you cannot store arrays in arrays".to_string(),
                 ))
             }
         })

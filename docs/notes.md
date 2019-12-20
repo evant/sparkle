@@ -90,7 +90,7 @@ Since it's not well defined in the reference, the default values for various typ
 
 Since it's not well defined in the reference, precedence order is (from tightest to loosest):
 - Operators
-- Calls
+- Indexing/Calls
 - Concatenation
 
 ## Literals
@@ -114,5 +114,10 @@ prompt, if so, the former proceeds the later. ex: `I asked Applejack the next nu
 ## Arrays
 
 The reference shows arrays being indexed directly, ex: `cake 2`. Unfortunately, this is ambiguous as `cake 2` is a valid
-identifier. Instead, I went with using the call syntax. ex: `I said cake using 2.`,
-`I said cake using my favorite number.`, `cake using 2 is now "apple".`.
+identifier. Instead I went with a different syntax:
+
+```
+<identifier><whitespace><at><whitespace><expression>
+```
+
+You can use `at` operator. ex: `the cake at the cake index plus 1`, `the cake at the cake index plus 1 is now "apple"`.
