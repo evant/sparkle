@@ -22,6 +22,7 @@ use crate::vars::{Callable, Callables};
 
 use crate::types::ArrayType;
 use cranelift_object::{ObjectBackend, ObjectBuilder, ObjectTrapCollection};
+use std::any::Any;
 use std::collections::HashSet;
 use std::convert::TryInto;
 use std::ffi::{CStr, CString};
@@ -830,27 +831,32 @@ fn send_write_lvalue_statement<'a, B: Backend>(
             Number.check(expr_type)?;
 
             let callable = vars.get(name)?;
-            let (element_type, array_value) =
-                if let Some((type_, value)) = send_var(callable, sender, &mut function_sender.builder) {
-                    if let Array(element_type) = type_ {
-                        (element_type, value)
-                    } else {
-                        return Err(ReportError::TypeError(format!(
-                            "Sorry, you can only index into an array, not a {}",
-                            type_
-                        )));
-                    }
+            let (element_type, array_value) = if let Some((type_, value)) =
+                send_var(callable, sender, &mut function_sender.builder)
+            {
+                if let Array(element_type) = type_ {
+                    (element_type, value)
                 } else {
                     return Err(ReportError::TypeError(format!(
-                        "Sorry use must call a paragraph, not index it"
+                        "Sorry, you can only index into an array, not a {}",
+                        type_
                     )));
-                };
+                }
+            } else {
+                return Err(ReportError::TypeError(format!(
+                    "Sorry use must call a paragraph, not index it"
+                )));
+            };
 
-            let size =
-                function_sender
-                    .builder
-                    .ins()
-                    .load(sender.pointer_type, MemFlags::new(), array_value, 0);
+            let type_ = element_type.into();
+            let ir_type = ir_type(sender.pointer_type, type_);
+
+            let size = function_sender.builder.ins().load(
+                sender.pointer_type,
+                MemFlags::new(),
+                array_value,
+                0,
+            );
             let array = function_sender.builder.ins().load(
                 sender.pointer_type,
                 MemFlags::new(),
@@ -861,10 +867,11 @@ fn send_write_lvalue_statement<'a, B: Backend>(
             let merge_block = function_sender.builder.create_ebb();
             // if the address is immediately after the header then we are a constant array, error out.
             let address_offset = function_sender.builder.ins().isub(array, array_value);
-            let cmp = function_sender
-                .builder
-                .ins()
-                .icmp_imm(IntCC::Equal, address_offset, sender.pointer_type.bytes() as i64 * 2);
+            let cmp = function_sender.builder.ins().icmp_imm(
+                IntCC::Equal,
+                address_offset,
+                sender.pointer_type.bytes() as i64 * 2,
+            );
             function_sender.builder.ins().brz(cmp, merge_block, &[]);
 
             // TODO: print a useful error.
@@ -878,34 +885,77 @@ fn send_write_lvalue_statement<'a, B: Backend>(
                 .ins()
                 .fcvt_to_uint(types::I64, expr_value);
             let one = function_sender.builder.ins().iconst(types::I64, 1);
-            let index = function_sender.builder.ins().isub(index, one); // arrays are one-indexed.
+            let index_sub_one = function_sender.builder.ins().isub(index, one); // arrays are one-indexed.
 
             let merge_block = function_sender.builder.create_ebb();
-            let cmp = function_sender
+            function_sender.builder.append_ebb_param(merge_block, sender.pointer_type);
+            let cmp = function_sender.builder.ins().icmp(
+                IntCC::UnsignedGreaterThanOrEqual,
+                index_sub_one,
+                size,
+            );
+            function_sender.builder.ins().brz(cmp, merge_block, &[array]);
+
+            let capacity = function_sender.builder.ins().load(
+                sender.pointer_type,
+                MemFlags::new(),
+                array_value,
+                sender.pointer_type.bytes() as i32 * 2,
+            );
+
+            function_sender
                 .builder
                 .ins()
-                .icmp(IntCC::UnsignedGreaterThanOrEqual, index, size);
-            function_sender.builder.ins().brz(cmp, merge_block, &[]);
+                .store(MemFlags::new(), index, array_value, 0);
 
-            // TODO: reallocate array.
-            function_sender.builder.ins().trap(TrapCode::User(1));
+            let cmp = function_sender.builder.ins().icmp(
+                IntCC::UnsignedGreaterThan,
+                index,
+                capacity,
+            );
+            function_sender.builder.ins().brz(cmp, merge_block, &[array]);
+
+            // max(index, size * 2)
+            let new_size = function_sender.builder.ins().imul_imm(capacity, 2);
+            let new_size = imax(sender.pointer_type, new_size, index, &mut function_sender.builder);
+
+            function_sender.builder.ins().store(
+                MemFlags::new(),
+                new_size,
+                array_value,
+                sender.pointer_type.bytes() as i32 * 2
+            );
+
+            let new_size_bytes = function_sender
+                .builder
+                .ins()
+                .imul_imm(new_size, ir_type.bytes() as i64);
+            let new_array = realloc(array, new_size_bytes, sender, &mut function_sender.builder)?;
+            function_sender.builder.ins().store(
+                MemFlags::new(),
+                new_array,
+                array_value,
+                sender.pointer_type.bytes() as i32
+            );
+
+            function_sender.builder.ins().jump(merge_block, &[new_array]);
 
             function_sender.builder.switch_to_block(merge_block);
             function_sender.builder.seal_block(merge_block);
+            let array = function_sender.builder.ebb_params(merge_block)[0];
 
-            let type_ = element_type.into();
             let (value_type, value) = f(type_, sender, vars, function_sender)?;
             type_.check(value_type)?;
 
-            let offset = function_sender.builder.ins().imul_imm(
-                index,
-                ir_type(sender.pointer_type, type_).bytes() as i64,
-            );
+            let offset = function_sender
+                .builder
+                .ins()
+                .imul_imm(index_sub_one, ir_type.bytes() as i64);
             function_sender.builder.ins().store_complex(
                 MemFlags::new(),
                 value,
                 &[array, offset],
-                0
+                0,
             );
 
             Ok(())
@@ -1099,13 +1149,15 @@ fn send_index<B: Backend>(
                 "Sorry use must call a paragraph, not index it"
             )));
         };
+    let type_ = element_type.into();
+    let ir_type = ir_type(sender.pointer_type, type_);
 
     let index = function_sender
         .builder
         .ins()
         .fcvt_to_uint(types::I64, expr_value);
     let one = function_sender.builder.ins().iconst(types::I64, 1);
-    let index = function_sender.builder.ins().isub(index, one); // arrays are one-indexed.
+    let index_sub_one = function_sender.builder.ins().isub(index, one); // arrays are one-indexed.
     let size =
         function_sender
             .builder
@@ -1115,7 +1167,7 @@ fn send_index<B: Backend>(
     let cmp = function_sender
         .builder
         .ins()
-        .icmp(IntCC::UnsignedGreaterThanOrEqual, index, size);
+        .icmp(IntCC::UnsignedGreaterThan, index, size);
     function_sender.builder.ins().brz(cmp, merge_block, &[]);
 
     // TODO: print a useful error.
@@ -1131,11 +1183,11 @@ fn send_index<B: Backend>(
         sender.pointer_type.bytes() as i32,
     );
     let offset = function_sender.builder.ins().imul_imm(
-        index,
-        ir_type(sender.pointer_type, element_type.into()).bytes() as i64,
+        index_sub_one,
+        ir_type.bytes() as i64,
     );
     let value = function_sender.builder.ins().load_complex(
-        ir_type(sender.pointer_type, element_type.into()),
+        ir_type,
         MemFlags::new(),
         &[array, offset],
         0,
@@ -1987,6 +2039,27 @@ fn alloc<B: Backend>(
     Ok(builder.inst_results(call)[0])
 }
 
+fn realloc<B: Backend>(
+    ptr: Value,
+    size: Value,
+    sender: &mut Sender<B>,
+    builder: &mut FunctionBuilder,
+) -> ReportResult<Value> {
+    let mut sig = sender.module.make_signature();
+    sig.params.push(AbiParam::new(sender.pointer_type));
+    sig.params.push(AbiParam::new(sender.pointer_type));
+    sig.returns.push(AbiParam::new(sender.pointer_type));
+
+    let callee = sender
+        .module
+        .declare_function("realloc", Linkage::Import, &sig)?;
+    let local_callee = sender.module.declare_func_in_func(callee, builder.func);
+
+    let call = builder.ins().call(local_callee, &[ptr, size]);
+
+    Ok(builder.inst_results(call)[0])
+}
+
 fn strlen<B: Backend>(
     string: Value,
     sender: &mut Sender<B>,
@@ -2145,4 +2218,17 @@ fn send_var<B: Backend>(
         }
         Callable::Func(_, _, _) => None,
     }
+}
+
+fn imax(ty: Type, left: Value, right: Value, builder: &mut FunctionBuilder) -> Value {
+    let merge_block = builder.create_ebb();
+    builder.append_ebb_param(merge_block, ty);
+    let cmp = builder
+        .ins()
+        .icmp(IntCC::UnsignedLessThan, left, right);
+    builder.ins().brz(cmp, merge_block, &[left]);
+    builder.ins().jump(merge_block, &[right]);
+    builder.switch_to_block(merge_block);
+    builder.seal_block(merge_block);
+    builder.ebb_params(merge_block)[0]
 }

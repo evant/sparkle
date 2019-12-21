@@ -5,9 +5,9 @@ Did you know that my favorite numbers always had the numbers 1 and 2 and 3.14 an
 I sang "I can bake " my cakes " cakes!"!
 I said "My favorite numbers are " my favorite numbers" and ok all of them are my favorites!"!
 I said "but "" my favorite numbers at 3 " is pretty tasty!"!
-my cakes at 1 is now "pumpkin"!
-my cakes at 2 is now "carrot"!
-my cakes at 3 is now "sponge"!
+my cakes at 3 is now "pumpkin"!
+my cakes at 4 is now "carrot"!
+my cakes at 5 is now "sponge"!
 I said "Now I can bake " my cakes " cakes!"!
 That's all about all the cakes!
 Your faithful student: Pinkie Pie!
