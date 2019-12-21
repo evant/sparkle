@@ -926,11 +926,15 @@ fn send_write_lvalue_statement<'a, B: Backend>(
                 sender.pointer_type.bytes() as i32 * 2
             );
 
+            let old_size_bytes = function_sender
+                .builder
+                .ins()
+                .imul_imm(index, ir_type.bytes() as i64);
             let new_size_bytes = function_sender
                 .builder
                 .ins()
                 .imul_imm(new_size, ir_type.bytes() as i64);
-            let new_array = realloc(array, new_size_bytes, sender, &mut function_sender.builder)?;
+            let new_array = realloc(array, old_size_bytes, new_size_bytes, sender, &mut function_sender.builder)?;
             function_sender.builder.ins().store(
                 MemFlags::new(),
                 new_array,
@@ -2041,7 +2045,8 @@ fn alloc<B: Backend>(
 
 fn realloc<B: Backend>(
     ptr: Value,
-    size: Value,
+    old_size: Value,
+    new_size: Value,
     sender: &mut Sender<B>,
     builder: &mut FunctionBuilder,
 ) -> ReportResult<Value> {
@@ -2055,9 +2060,26 @@ fn realloc<B: Backend>(
         .declare_function("realloc", Linkage::Import, &sig)?;
     let local_callee = sender.module.declare_func_in_func(callee, builder.func);
 
-    let call = builder.ins().call(local_callee, &[ptr, size]);
+    let call = builder.ins().call(local_callee, &[ptr, new_size]);
+    let value = builder.inst_results(call)[0];
 
-    Ok(builder.inst_results(call)[0])
+    // clear out new memory
+    let s = builder.ins().iadd(ptr, old_size);
+    let c = builder.ins().iconst(types::I32, 0);
+    let n = builder.ins().isub(new_size, old_size);
+
+    let mut sig = sender.module.make_signature();
+    sig.params.push(AbiParam::new(sender.pointer_type));
+    sig.params.push(AbiParam::new(types::I32));
+    sig.params.push(AbiParam::new(sender.pointer_type));
+    sig.returns.push(AbiParam::new(sender.pointer_type));
+    let callee = sender
+        .module
+        .declare_function("memset", Linkage::Import, &sig)?;
+    let local_callee = sender.module.declare_func_in_func(callee, builder.func);
+    let call = builder.ins().call(local_callee, &[s, c, n]);
+
+    Ok(value)
 }
 
 fn strlen<B: Backend>(
