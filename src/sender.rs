@@ -846,23 +846,25 @@ fn send_write_lvalue_statement<'a, B: Backend>(
                     )));
                 };
 
-            let index = function_sender
-                .builder
-                .ins()
-                .fcvt_to_uint(types::I64, expr_value);
-            let one = function_sender.builder.ins().iconst(types::I64, 1);
-            let index = function_sender.builder.ins().isub(index, one); // arrays are one-indexed.
-
             let size =
                 function_sender
                     .builder
                     .ins()
                     .load(sender.pointer_type, MemFlags::new(), array_value, 0);
+            let array = function_sender.builder.ins().load(
+                sender.pointer_type,
+                MemFlags::new(),
+                array_value,
+                sender.pointer_type.bytes() as i32,
+            );
+
             let merge_block = function_sender.builder.create_ebb();
+            // if the address is immediately after the header then we are a constant array, error out.
+            let address_offset = function_sender.builder.ins().isub(array, array_value);
             let cmp = function_sender
                 .builder
                 .ins()
-                .icmp(IntCC::UnsignedGreaterThanOrEqual, index, size);
+                .icmp_imm(IntCC::Equal, address_offset, sender.pointer_type.bytes() as i64 * 2);
             function_sender.builder.ins().brz(cmp, merge_block, &[]);
 
             // TODO: print a useful error.
@@ -871,14 +873,25 @@ fn send_write_lvalue_statement<'a, B: Backend>(
             function_sender.builder.switch_to_block(merge_block);
             function_sender.builder.seal_block(merge_block);
 
-            //TODO: check if const
+            let index = function_sender
+                .builder
+                .ins()
+                .fcvt_to_uint(types::I64, expr_value);
+            let one = function_sender.builder.ins().iconst(types::I64, 1);
+            let index = function_sender.builder.ins().isub(index, one); // arrays are one-indexed.
 
-            let array = function_sender.builder.ins().load(
-                sender.pointer_type,
-                MemFlags::new(),
-                array_value,
-                sender.pointer_type.bytes() as i32,
-            );
+            let merge_block = function_sender.builder.create_ebb();
+            let cmp = function_sender
+                .builder
+                .ins()
+                .icmp(IntCC::UnsignedGreaterThanOrEqual, index, size);
+            function_sender.builder.ins().brz(cmp, merge_block, &[]);
+
+            // TODO: reallocate array.
+            function_sender.builder.ins().trap(TrapCode::User(1));
+
+            function_sender.builder.switch_to_block(merge_block);
+            function_sender.builder.seal_block(merge_block);
 
             let type_ = element_type.into();
             let (value_type, value) = f(type_, sender, vars, function_sender)?;
