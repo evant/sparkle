@@ -1085,15 +1085,16 @@ fn prefix_xor<'a>(allow_infix_and: bool) -> impl Fn(&'a str) -> ReadResult<Expr>
     )
 }
 
-fn prefix_not<'a>(_allow_infix_and: bool) -> impl Fn(&'a str) -> ReadResult<Expr> {
-    map(
-        preceded(
-            terminated(tag("not"), whitespace1),
-            /*TODO: figure out how to allow not not ..., right now it creates an recursive type.*/
-            alt((lit_expr, call_expr)),
-        ),
-        |e| Expr::Not(Box::new(e)),
-    )
+fn prefix_not<'a>(allow_infix_and: bool) -> impl Fn(&'a str) -> ReadResult<Expr> {
+    move |s| {
+        map(
+            preceded(
+                terminated(tag("not"), whitespace1),
+                value_expr(allow_infix_and),
+            ),
+            |e| Expr::Not(Box::new(e)),
+        )(s)
+    }
 }
 
 fn boolean(s: &str) -> ReadResult<Literal> {
@@ -1541,6 +1542,10 @@ fn parses_not() {
     assert_eq!(
         prefix_not(true)("not true"),
         Ok(("", Expr::Not(Box::new(Expr::Lit(Literal::Boolean(true))))))
+    );
+    assert_eq!(
+        prefix_not(true)("not not true"),
+        Ok(("", Expr::Not(Box::new(Expr::Not(Box::new(Expr::Lit(Literal::Boolean(true))))))))
     );
     assert_eq!(
         prefix_not(true)("not a tree"),
