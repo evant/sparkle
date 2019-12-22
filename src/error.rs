@@ -2,7 +2,7 @@ use std::error::Error;
 use std::fmt;
 use std::fmt::{Formatter, Result};
 
-use crate::error::ReportError::{ModuleError, ReadError, SendError, TypeError, LookupError};
+use crate::error::ReportError::{LookupError, ModuleError, ReadError, SendError, TypeError};
 
 pub enum ReportError {
     ReadError(String),

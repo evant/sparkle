@@ -46,6 +46,9 @@ Added the ability to omit the type when declaring with a value. The type can be 
 ex: `Did you know that Spike's age is 10?`. This often reads better. Unfortunately, this does not work for arrays as 
 it's ambiguous if you are using `and` as an operator or an element separator.
 
+`always` denotes deep immutability. That is, you can't re-assign a variable declared as `always` nor modify it. ex: 
+arrays will throw a runtime exception if you attempt to do so.
+
 ## Variable Assignment
 
 It's unclear what's allowed on the right side of a variable assignment. I went with an expression as there should be no
@@ -121,3 +124,8 @@ identifier. Instead I went with a different syntax:
 ```
 
 You can use `at` operator. ex: `the cake at the cake index plus 1`, `the cake at the cake index plus 1 is now "apple"`.
+
+## For Loops
+
+The reference is unclear if the range for a for loop is inclusive or exclusive. I went with inclusive, ex: 
+`For every number n from 1 to 3` will loop 3 times.

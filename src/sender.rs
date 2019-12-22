@@ -1,6 +1,13 @@
+use std::any::Any;
+use std::collections::HashSet;
+use std::convert::TryInto;
+use std::ffi::{CStr, CString};
 use std::fs::File;
-
+use std::io::Write;
 use std::mem;
+use std::os::raw::c_char;
+use std::path::Path;
+use std::process::exit;
 use std::str::FromStr;
 
 use cranelift::codegen::Context;
@@ -8,6 +15,7 @@ use cranelift::prelude::settings::{self, Configurable};
 use cranelift::prelude::*;
 use cranelift::prelude::{isa, AbiParam, FunctionBuilder, FunctionBuilderContext};
 use cranelift_module::{default_libcall_names, Backend, DataContext, FuncId, Linkage, Module};
+use cranelift_object::{ObjectBackend, ObjectBuilder, ObjectTrapCollection};
 use cranelift_simplejit::{SimpleJITBackend, SimpleJITBuilder};
 use target_lexicon::{OperatingSystem, Triple};
 
@@ -17,19 +25,9 @@ use crate::pst::{
     Arg, BinOperator, Call, Declaration, DeclareVar, Expr, Index, LValue, Literal, Paragraph,
     Report, Statement,
 };
+use crate::types::ArrayType;
 use crate::types::Type::{Array, Boolean, Chars, Number};
 use crate::vars::{Callable, Callables};
-
-use crate::types::ArrayType;
-use cranelift_object::{ObjectBackend, ObjectBuilder, ObjectTrapCollection};
-use std::any::Any;
-use std::collections::HashSet;
-use std::convert::TryInto;
-use std::ffi::{CStr, CString};
-use std::io::Write;
-use std::os::raw::c_char;
-use std::path::Path;
-use std::process::exit;
 
 type ReportResult<T> = Result<T, ReportError>;
 
@@ -477,6 +475,17 @@ fn send_statement<'a, B: Backend>(
             &mut vars.create_child(),
             function_sender,
         ),
+        Statement::For(type_, var, from, to, body) => send_for_statement(
+            type_,
+            var,
+            from,
+            to,
+            body,
+            return_type,
+            sender,
+            &mut vars.create_child(),
+            function_sender,
+        ),
         Statement::Call(call) => {
             send_call(call, sender, vars, function_sender)?;
             Ok(())
@@ -745,7 +754,7 @@ fn send_init_variable<'a, B: Backend>(
         _ => {
             return Err(ReportError::TypeError(
                 "must declare type or value".to_owned(),
-            ))
+            ));
         }
     };
     Ok((type_, value))
@@ -888,13 +897,18 @@ fn send_write_lvalue_statement<'a, B: Backend>(
             let index_sub_one = function_sender.builder.ins().isub(index, one); // arrays are one-indexed.
 
             let merge_block = function_sender.builder.create_ebb();
-            function_sender.builder.append_ebb_param(merge_block, sender.pointer_type);
+            function_sender
+                .builder
+                .append_ebb_param(merge_block, sender.pointer_type);
             let cmp = function_sender.builder.ins().icmp(
                 IntCC::UnsignedGreaterThanOrEqual,
                 index_sub_one,
                 size,
             );
-            function_sender.builder.ins().brz(cmp, merge_block, &[array]);
+            function_sender
+                .builder
+                .ins()
+                .brz(cmp, merge_block, &[array]);
 
             let capacity = function_sender.builder.ins().load(
                 sender.pointer_type,
@@ -908,22 +922,30 @@ fn send_write_lvalue_statement<'a, B: Backend>(
                 .ins()
                 .store(MemFlags::new(), index, array_value, 0);
 
-            let cmp = function_sender.builder.ins().icmp(
-                IntCC::UnsignedGreaterThan,
-                index,
-                capacity,
-            );
-            function_sender.builder.ins().brz(cmp, merge_block, &[array]);
+            let cmp =
+                function_sender
+                    .builder
+                    .ins()
+                    .icmp(IntCC::UnsignedGreaterThan, index, capacity);
+            function_sender
+                .builder
+                .ins()
+                .brz(cmp, merge_block, &[array]);
 
             // max(index, size * 2)
             let new_size = function_sender.builder.ins().imul_imm(capacity, 2);
-            let new_size = imax(sender.pointer_type, new_size, index, &mut function_sender.builder);
+            let new_size = imax(
+                sender.pointer_type,
+                new_size,
+                index,
+                &mut function_sender.builder,
+            );
 
             function_sender.builder.ins().store(
                 MemFlags::new(),
                 new_size,
                 array_value,
-                sender.pointer_type.bytes() as i32 * 2
+                sender.pointer_type.bytes() as i32 * 2,
             );
 
             let old_size_bytes = function_sender
@@ -934,15 +956,24 @@ fn send_write_lvalue_statement<'a, B: Backend>(
                 .builder
                 .ins()
                 .imul_imm(new_size, ir_type.bytes() as i64);
-            let new_array = realloc(array, old_size_bytes, new_size_bytes, sender, &mut function_sender.builder)?;
+            let new_array = realloc(
+                array,
+                old_size_bytes,
+                new_size_bytes,
+                sender,
+                &mut function_sender.builder,
+            )?;
             function_sender.builder.ins().store(
                 MemFlags::new(),
                 new_array,
                 array_value,
-                sender.pointer_type.bytes() as i32
+                sender.pointer_type.bytes() as i32,
             );
 
-            function_sender.builder.ins().jump(merge_block, &[new_array]);
+            function_sender
+                .builder
+                .ins()
+                .jump(merge_block, &[new_array]);
 
             function_sender.builder.switch_to_block(merge_block);
             function_sender.builder.seal_block(merge_block);
@@ -1080,6 +1111,59 @@ fn send_do_while_statement<'a, B: Backend>(
     Ok(())
 }
 
+fn send_for_statement<'a, B: Backend>(
+    type_: &Option<crate::types::Type>,
+    var: &pst::Variable<'a>,
+    from: &Expr,
+    to: &Expr,
+    body: &'a [Statement<'a>],
+    return_type: Option<crate::types::Type>,
+    sender: &mut Sender<B>,
+    vars: &mut Callables<'a>,
+    function_sender: &mut FunctionSender,
+) -> ReportResult<()> {
+    if let Some(type_) = type_ {
+        Number.check(*type_)?;
+    }
+    let (from_type, from_value) = send_expression(from, sender, vars, function_sender)?;
+    Number.check(from_type)?;
+    let (to_type, to_value) = send_expression(to, sender, vars, function_sender)?;
+    Number.check(to_type)?;
+    let pst::Variable(counter_name) = var;
+    let counter = vars.new_variable();
+    vars.insert(counter_name, Callable::Var(Number, counter, true));
+
+    function_sender.builder.declare_var(counter, types::F64);
+    function_sender.builder.def_var(counter, from_value);
+
+    let header_block = function_sender.builder.create_ebb();
+    let exit_block = function_sender.builder.create_ebb();
+    function_sender.builder.ins().jump(header_block, &[]);
+    function_sender.builder.switch_to_block(header_block);
+
+    let counter_value = function_sender.builder.use_var(counter);
+    let cmp = function_sender.builder.ins().fcmp(FloatCC::GreaterThan, counter_value, to_value);
+    function_sender.builder.ins().brnz(cmp, exit_block, &[]);
+
+    for statement in body {
+        send_statement(statement, return_type, sender, vars, function_sender)?;
+    }
+
+    let one = function_sender.builder.ins().f64const(1f64);
+    let inc = function_sender.builder.ins().fadd(counter_value, one);
+    function_sender.builder.def_var(counter, inc);
+    function_sender.builder.ins().jump(header_block, &[]);
+
+    function_sender.builder.switch_to_block(exit_block);
+
+    // We've reached the bottom of the loop, so there will be no
+    // more backedges to the header to exits to the bottom.
+    function_sender.builder.seal_block(header_block);
+    function_sender.builder.seal_block(exit_block);
+
+    Ok(())
+}
+
 fn send_call<B: Backend>(
     call: &Call,
     sender: &mut Sender<B>,
@@ -1186,16 +1270,15 @@ fn send_index<B: Backend>(
         array_value,
         sender.pointer_type.bytes() as i32,
     );
-    let offset = function_sender.builder.ins().imul_imm(
-        index_sub_one,
-        ir_type.bytes() as i64,
-    );
-    let value = function_sender.builder.ins().load_complex(
-        ir_type,
-        MemFlags::new(),
-        &[array, offset],
-        0,
-    );
+    let offset = function_sender
+        .builder
+        .ins()
+        .imul_imm(index_sub_one, ir_type.bytes() as i64);
+    let value =
+        function_sender
+            .builder
+            .ins()
+            .load_complex(ir_type, MemFlags::new(), &[array, offset], 0);
 
     Ok((element_type.into(), value))
 }
@@ -2245,9 +2328,7 @@ fn send_var<B: Backend>(
 fn imax(ty: Type, left: Value, right: Value, builder: &mut FunctionBuilder) -> Value {
     let merge_block = builder.create_ebb();
     builder.append_ebb_param(merge_block, ty);
-    let cmp = builder
-        .ins()
-        .icmp(IntCC::UnsignedLessThan, left, right);
+    let cmp = builder.ins().icmp(IntCC::UnsignedLessThan, left, right);
     builder.ins().brz(cmp, merge_block, &[left]);
     builder.ins().jump(merge_block, &[right]);
     builder.switch_to_block(merge_block);

@@ -177,7 +177,11 @@ fn cakes() -> TestResult {
         "I can bake chocolate and apple cinnamon and fruit cakes!\n\
          My favorite numbers are 1 and 2 and 3.14 and 4 and ok all of them are my favorites!\n\
          but 3.14 is pretty tasty!\n\
-         Now I can bake chocolate and apple cinnamon and pumpkin and carrot and sponge cakes!\n"
+         Now I can bake chocolate cake!\n\
+         Now I can bake apple cinnamon cake!\n\
+         Now I can bake pumpkin cake!\n\
+         Now I can bake carrot cake!\n\
+         Now I can bake sponge cake!\n",
     );
 
     Ok(())

@@ -8,6 +8,8 @@ I said "but "" my favorite numbers at 3 " is pretty tasty!"!
 my cakes at 3 is now "pumpkin"!
 my cakes at 4 is now "carrot"!
 my cakes at 5 is now "sponge"!
-I said "Now I can bake " my cakes " cakes!"!
+For every cake from 1 to 5,
+I said "Now I can bake " my cakes at cake " cake!"!
+That's what I did.
 That's all about all the cakes!
 Your faithful student: Pinkie Pie!

@@ -20,6 +20,13 @@ pub enum Statement<'a> {
     If(Expr<'a>, Vec<Statement<'a>>, Vec<Statement<'a>>),
     While(Expr<'a>, Vec<Statement<'a>>),
     DoWhile(Expr<'a>, Vec<Statement<'a>>),
+    For(
+        Option<Type>,
+        Variable<'a>,
+        Expr<'a>,
+        Expr<'a>,
+        Vec<Statement<'a>>,
+    ),
     Call(Call<'a>),
     Return(Expr<'a>),
     Read(LValue<'a>, Option<Type>, Option<Expr<'a>>),

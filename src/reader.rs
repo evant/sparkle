@@ -44,6 +44,7 @@ fn keyword(s: &str) -> ReadResult<&str> {
         keyword_using,
         keyword_at,
         keyword_the_next,
+        keyword_from,
     ))(s)
 }
 
@@ -222,6 +223,7 @@ fn statement(s: &str) -> ReadResult<Statement> {
             if_statement,
             while_statement,
             do_while_statement,
+            for_statement,
             increment_statement,
             decrement_statement,
             call_statement,
@@ -516,10 +518,9 @@ fn while_statement(s: &str) -> ReadResult<Statement> {
     map(
         tuple((
             terminated(while_declaration, whitespace0),
-            many0(statement),
-            while_closing,
+            terminated(many0(statement), loop_closing),
         )),
-        |(cond, body, _)| Statement::While(cond, body),
+        |(cond, body)| Statement::While(cond, body),
     )(s)
 }
 
@@ -553,7 +554,7 @@ fn while_declaration(s: &str) -> ReadResult<Expr> {
     )(s)
 }
 
-fn keyword_while_closing(s: &str) -> ReadResult<&str> {
+fn keyword_loop_closing(s: &str) -> ReadResult<&str> {
     recognize(tuple((
         tag("That's"),
         whitespace1,
@@ -565,8 +566,8 @@ fn keyword_while_closing(s: &str) -> ReadResult<&str> {
     )))(s)
 }
 
-fn while_closing(s: &str) -> ReadResult<&str> {
-    terminated(keyword_while_closing, punctuation)(s)
+fn loop_closing(s: &str) -> ReadResult<&str> {
+    terminated(keyword_loop_closing, punctuation)(s)
 }
 
 fn do_while_statement(s: &str) -> ReadResult<Statement> {
@@ -625,6 +626,35 @@ fn do_while_closing(s: &str) -> ReadResult<Expr> {
         terminated(keyword_do_while_closing, whitespace1),
         expr(true),
     )(s)
+}
+
+fn for_statement(s: &str) -> ReadResult<Statement> {
+    map(
+        pair(
+            terminated(
+                preceded(
+                    terminated(keyword_for, whitespace1),
+                    tuple((
+                        opt(terminated(type_, whitespace1)),
+                        terminated(var, whitespace_delim1(keyword_from)),
+                        terminated(expr(true), whitespace_delim1(tag("to"))),
+                        expr(true),
+                    )),
+                ),
+                preceded(punctuation, whitespace0),
+            ),
+            terminated(many0(statement), loop_closing),
+        ),
+        |((type_, var, from, to), body)| Statement::For(type_, var, from, to, body),
+    )(s)
+}
+
+fn keyword_for(s: &str) -> ReadResult<&str> {
+    recognize(tuple((tag("For"), whitespace1, tag("every"))))(s)
+}
+
+fn keyword_from(s: &str) -> ReadResult<&str> {
+    tag("from")(s)
 }
 
 fn keyword_increment(s: &str) -> ReadResult<&str> {
@@ -1545,7 +1575,12 @@ fn parses_not() {
     );
     assert_eq!(
         prefix_not(true)("not not true"),
-        Ok(("", Expr::Not(Box::new(Expr::Not(Box::new(Expr::Lit(Literal::Boolean(true))))))))
+        Ok((
+            "",
+            Expr::Not(Box::new(Expr::Not(Box::new(Expr::Lit(Literal::Boolean(
+                true
+            ))))))
+        ))
     );
     assert_eq!(
         prefix_not(true)("not a tree"),
@@ -1676,7 +1711,7 @@ fn parses_concat() {
                 Expr::Lit(Literal::Chars("but ")),
                 Expr::Call(Call(
                     "my favorite numbers",
-                    vec![Expr::Lit(Literal::Number(3f64))]
+                    vec![Expr::Lit(Literal::Number(3f64))],
                 )),
                 Expr::Lit(Literal::Chars(" is pretty tasty!"))
             ])
@@ -1786,7 +1821,7 @@ fn parses_assign_statement() {
             "",
             Statement::Assign(
                 LValue::Variable("Spike's age"),
-                Expr::Lit(Literal::Number(11f64))
+                Expr::Lit(Literal::Number(11f64)),
             )
         ))
     );
@@ -1811,9 +1846,9 @@ fn parses_assign_statement() {
             Statement::Assign(
                 LValue::Index(Index(
                     "my cakes",
-                    Box::new(Expr::Lit(Literal::Number(1f64)))
+                    Box::new(Expr::Lit(Literal::Number(1f64))),
                 )),
-                Expr::Lit(Literal::Chars("pumpkin"))
+                Expr::Lit(Literal::Chars("pumpkin")),
             )
         ))
     );
@@ -1874,6 +1909,23 @@ fn parses_do_while_statement() {
             Statement::DoWhile(
                 Expr::Lit(Literal::Boolean(true)),
                 vec![Statement::Print(Expr::Lit(Literal::Chars("I'm hungry")))],
+            )
+        ))
+    );
+}
+
+#[test]
+fn parses_for_statement() {
+    assert_eq!(
+        statement("For every number element of harmony from 1 to 6, I said \"element \" element of harmony. That's what I did."),
+        Ok((
+            "",
+            Statement::For(
+                Some(Number),
+                Variable("element of harmony"),
+                Expr::Lit(Literal::Number(1f64)),
+                Expr::Lit(Literal::Number(6f64)),
+                vec![Statement::Print(Expr::Concat(vec![Expr::Lit(Literal::Chars("element ")), Expr::Call(Call("element of harmony", vec![]))]))],
             )
         ))
     );
@@ -1951,7 +2003,7 @@ fn parses_index_expr() {
             "",
             Expr::Index(Index(
                 "my cakes",
-                Box::new(Expr::Lit(Literal::Number(1f64)))
+                Box::new(Expr::Lit(Literal::Number(1f64))),
             ))
         ))
     );

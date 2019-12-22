@@ -1,9 +1,9 @@
 use crate::error::ReportError;
 use crate::types::Type;
-use cranelift_module::{FuncId, DataId};
-use std::collections::HashMap;
-use cranelift::prelude::{Value, Variable, EntityRef};
+use cranelift::prelude::{EntityRef, Value, Variable};
+use cranelift_module::{DataId, FuncId};
 use std::cell::Cell;
+use std::collections::HashMap;
 
 pub struct Callables<'a> {
     parent: Option<Box<&'a Callables<'a>>>,
@@ -32,7 +32,7 @@ impl<'a> Callables<'a> {
         Callables {
             parent: Some(Box::new(self)),
             values: HashMap::new(),
-            var_index: None
+            var_index: None,
         }
     }
 
@@ -40,8 +40,8 @@ impl<'a> Callables<'a> {
         match &self.var_index {
             None => match &self.parent {
                 Some(parent) => parent.get_var_index(),
-                None => unreachable!()
-            }
+                None => unreachable!(),
+            },
             Some(var_index) => var_index,
         }
     }
