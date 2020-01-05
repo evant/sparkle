@@ -12,7 +12,12 @@ This is a 32 bit value, where 0 is false, anything else is true.
 
 ## String
 
-This is a null-terminated byte-array, just like c.
+Strings are length-prefixed. They also include a reference count so they can be freed when the reference drops to 0. For
+constant strings this ref count is -1 to denote they are not allocated on the heap so they do not need to be freed.
+
+```
+[ref count, size, contents]
+```
 
 ## Array
 

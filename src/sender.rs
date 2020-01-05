@@ -1,20 +1,17 @@
-use std::any::Any;
 use std::collections::HashSet;
-use std::convert::TryInto;
 use std::ffi::{CStr, CString};
 use std::fs::File;
 use std::io::Write;
 use std::mem;
 use std::os::raw::c_char;
 use std::path::Path;
-use std::process::exit;
 use std::str::FromStr;
 
 use cranelift::codegen::Context;
-use cranelift::prelude::settings::{self, Configurable};
 use cranelift::prelude::*;
-use cranelift::prelude::{isa, AbiParam, FunctionBuilder, FunctionBuilderContext};
-use cranelift_module::{default_libcall_names, Backend, DataContext, FuncId, Linkage, Module};
+use cranelift::prelude::{AbiParam, FunctionBuilder, FunctionBuilderContext, isa};
+use cranelift::prelude::settings::{self, Configurable};
+use cranelift_module::{Backend, DataContext, default_libcall_names, FuncId, Linkage, Module, DataId};
 use cranelift_object::{ObjectBackend, ObjectBuilder, ObjectTrapCollection};
 use cranelift_simplejit::{SimpleJITBackend, SimpleJITBuilder};
 use target_lexicon::{OperatingSystem, Triple};
@@ -22,12 +19,13 @@ use target_lexicon::{OperatingSystem, Triple};
 use crate::error::ReportError;
 use crate::pst;
 use crate::pst::{
-    Arg, BinOperator, Call, Declaration, DeclareVar, Expr, Index, LValue, Literal, Paragraph,
+    Arg, BinOperator, Call, Declaration, DeclareVar, Expr, Index, Literal, LValue, Paragraph,
     Report, Statement,
 };
 use crate::types::ArrayType;
 use crate::types::Type::{Array, Boolean, Chars, Number};
 use crate::vars::{Callable, Callables};
+use nom::lib::std::collections::HashMap;
 
 type ReportResult<T> = Result<T, ReportError>;
 
@@ -173,7 +171,7 @@ fn object_sender(name: &str, target: &str) -> ReportResult<Sender<ObjectBackend>
 
     let module = Module::<ObjectBackend>::new(builder);
 
-    Ok(Sender::new(module, triple))
+    Ok(Sender::new(module, triple)?)
 }
 
 fn simple_jit_sender(target: &str) -> ReportResult<Sender<SimpleJITBackend>> {
@@ -181,7 +179,7 @@ fn simple_jit_sender(target: &str) -> ReportResult<Sender<SimpleJITBackend>> {
     let builder = SimpleJITBuilder::new(default_libcall_names());
     let module = Module::<SimpleJITBackend>::new(builder);
 
-    Ok(Sender::new(module, triple))
+    Ok(Sender::new(module, triple)?)
 }
 
 fn send<'a, B: Backend>(
@@ -191,8 +189,6 @@ fn send<'a, B: Backend>(
     context: &mut Context,
     mut f: impl FnMut(&Sender<B>, &Context) -> ReportResult<()>,
 ) -> ReportResult<FuncId> {
-    send_constants(sender)?;
-
     let mut mane_paragraphs: Vec<FuncId> = vec![];
     let mut declared_paragraphs: Vec<(FuncId, &Paragraph)> = vec![];
 
@@ -240,27 +236,6 @@ fn send<'a, B: Backend>(
     let id = send_mane(&mane_paragraphs, init_globals, sender, context, &mut f)?;
 
     Ok(id)
-}
-
-fn send_constants<B: Backend>(sender: &mut Sender<B>) -> ReportResult<()> {
-    // for printing booleans
-    create_constant_string("yes", sender)?;
-    create_constant_string("no", sender)?;
-    // for printing 'nothing'
-    create_constant_string("nothing", sender)?;
-    // for formatting numbers
-    create_constant_string("%g", sender)?;
-    // for parsing booleans
-    create_constant_string("true", sender)?;
-    create_constant_string("false", sender)?;
-    create_constant_string("right", sender)?;
-    create_constant_string("wrong", sender)?;
-    create_constant_string("correct", sender)?;
-    create_constant_string("incorrect", sender)?;
-    // for printing arrays
-    create_constant_string(" and ", sender)?;
-
-    Ok(())
 }
 
 fn send_declare_global<'a, B: Backend>(
@@ -519,7 +494,7 @@ fn send_print_statement<'a, B: Backend>(
                 .ins()
                 .brz(res, merge_block, &[value]);
             let nothing =
-                reference_constant_string("nothing", sender, &mut function_sender.builder)?;
+                reference_constant_string(sender.string_constants.nothing, sender, &mut function_sender.builder)?;
             function_sender.builder.ins().jump(merge_block, &[nothing]);
             function_sender.builder.switch_to_block(merge_block);
             function_sender.builder.seal_block(merge_block);
@@ -642,14 +617,14 @@ fn send_read_statement<'a, B: Backend>(
                     let merge_block = builder.create_ebb();
                     builder.append_ebb_param(merge_block, types::I32);
 
-                    let yes = reference_constant_string("yes", sender, builder)?;
-                    let no = reference_constant_string("no", sender, builder)?;
-                    let true_ = reference_constant_string("true", sender, builder)?;
-                    let false_ = reference_constant_string("false", sender, builder)?;
-                    let right = reference_constant_string("right", sender, builder)?;
-                    let wrong = reference_constant_string("wrong", sender, builder)?;
-                    let correct = reference_constant_string("correct", sender, builder)?;
-                    let incorrect = reference_constant_string("incorrect", sender, builder)?;
+                    let yes = reference_constant_string(sender.string_constants.yes, sender, builder)?;
+                    let no = reference_constant_string(sender.string_constants.no, sender, builder)?;
+                    let true_ = reference_constant_string(sender.string_constants.true_, sender, builder)?;
+                    let false_ = reference_constant_string(sender.string_constants.false_, sender, builder)?;
+                    let right = reference_constant_string(sender.string_constants.right, sender, builder)?;
+                    let wrong = reference_constant_string(sender.string_constants.wrong, sender, builder)?;
+                    let correct = reference_constant_string(sender.string_constants.correct, sender, builder)?;
+                    let incorrect = reference_constant_string(sender.string_constants.incorrect, sender, builder)?;
 
                     let zero = builder.ins().iconst(types::I32, 0);
                     let one = builder.ins().iconst(types::I32, 1);
@@ -1747,10 +1722,10 @@ fn send_literal<'a, B: Backend>(
 ) -> ReportResult<(crate::types::Type, Value)> {
     let result = match lit {
         Literal::Chars(string) => {
-            create_constant_string(string, sender)?;
+            let id = sender.create_constant_string(string)?;
             (
                 crate::types::Type::Chars,
-                reference_constant_string(string, sender, &mut function_sender.builder)?,
+                reference_constant_string(id, sender, &mut function_sender.builder)?,
             )
         }
         Literal::Number(n) => send_number_literal(*n, function_sender),
@@ -1782,26 +1757,28 @@ fn send_boolean_literal(
     )
 }
 
-fn create_constant_string<B: Backend>(string: &str, sender: &mut Sender<B>) -> ReportResult<()> {
-    if sender.constants.contains(string) {
-        return Ok(());
+fn create_constant_string<B: Backend>(string: &str,
+                                      module: &mut Module<B>,
+                                      data_context: &mut DataContext,
+                                      constants: &mut HashMap<String, DataId>) -> ReportResult<DataId> {
+    if let Some(id) = constants.get(string) {
+        return Ok(*id);
     }
 
     // We need to append a null byte at the end for libc.
     let mut s: Vec<_> = string.bytes().collect();
     s.push(b'\0');
-    sender.data_context.define(s.into_boxed_slice());
-    let id = sender
-        .module
+    data_context.define(s.into_boxed_slice());
+    let id = module
         .declare_data(string, Linkage::Export, false, Option::None)?;
 
-    sender.module.define_data(id, &sender.data_context)?;
+    module.define_data(id, &data_context)?;
 
-    sender.data_context.clear();
+    data_context.clear();
 
-    sender.constants.insert(string.to_owned());
+    constants.insert(string.to_owned(), id);
 
-    Ok(())
+    Ok(id)
 }
 
 fn compare_strings<B: Backend>(
@@ -1890,7 +1867,7 @@ fn float_to_string<B: Backend>(
             .declare_function("snprintf", Linkage::Import, &sig)?;
         let local_callee = sender.module.declare_func_in_func(callee, builder.func);
 
-        let format = reference_constant_string("%g", sender, builder)?;
+        let format = reference_constant_string(sender.string_constants.percent_g, sender, builder)?;
         let call = builder.ins().call(
             local_callee,
             &[buffer_value, buffer_size, format, float_value],
@@ -1911,12 +1888,12 @@ fn bool_to_string<B: Backend>(
     builder.append_ebb_param(merge_block, sender.pointer_type);
 
     builder.ins().brz(bool_value, else_block, &[]);
-    let then_return = reference_constant_string("yes", sender, builder)?;
+    let then_return = reference_constant_string(sender.string_constants.yes, sender, builder)?;
     builder.ins().jump(merge_block, &[then_return]);
 
     builder.switch_to_block(else_block);
     builder.seal_block(else_block);
-    let else_return = reference_constant_string("no", sender, builder)?;
+    let else_return = reference_constant_string(sender.string_constants.no, sender, builder)?;
     builder.ins().jump(merge_block, &[else_return]);
 
     builder.switch_to_block(merge_block);
@@ -2046,7 +2023,7 @@ fn array_to_string<B: Backend>(
     let cmp = builder.ins().icmp(IntCC::NotEqual, index, last_index);
     builder.ins().brz(cmp, merge_block, &[]);
 
-    let sep = reference_constant_string(" and ", sender, builder)?;
+    let sep = reference_constant_string(sender.string_constants._and_, sender, builder)?;
     concat_strings(buff, buff_size, sep, sender, builder)?;
     builder.ins().jump(merge_block, &[]);
 
@@ -2067,14 +2044,11 @@ fn array_to_string<B: Backend>(
 }
 
 fn reference_constant_string<B: Backend>(
-    string: &str,
+    id: DataId,
     sender: &mut Sender<B>,
     builder: &mut FunctionBuilder,
 ) -> ReportResult<Value> {
-    let sym = sender
-        .module
-        .declare_data(string, Linkage::Export, false, Option::None)?;
-    let local_id = sender.module.declare_data_in_func(sym, builder.func);
+    let local_id = sender.module.declare_data_in_func(id, builder.func);
 
     Ok(builder
         .ins()
@@ -2256,20 +2230,55 @@ struct Sender<B: Backend> {
     triple: Triple,
     module: Module<B>,
     data_context: DataContext,
-    constants: HashSet<String>,
     pointer_type: Type,
+    string_constants: StringConstants,
+}
+
+struct StringConstants {
+    yes: DataId,
+    no: DataId,
+    true_: DataId,
+    false_: DataId,
+    right: DataId,
+    wrong: DataId,
+    correct: DataId,
+    incorrect: DataId,
+    nothing: DataId,
+    percent_g: DataId,
+    _and_: DataId,
+    user_defined: HashMap<String, DataId>,
 }
 
 impl<B: Backend> Sender<B> {
-    fn new(module: Module<B>, triple: Triple) -> Sender<B> {
+    fn new(mut module: Module<B>, triple: Triple) -> ReportResult<Sender<B>> {
         let pointer_type = module.target_config().pointer_type();
-        Sender {
+        let mut data_context = DataContext::new();
+        let mut user_defined_constants = HashMap::new();
+        let string_constants = StringConstants {
+            yes: create_constant_string("yes", &mut module, &mut data_context, &mut user_defined_constants)?,
+            no: create_constant_string("no", &mut module, &mut data_context, &mut user_defined_constants)?,
+            true_: create_constant_string("true", &mut module, &mut data_context, &mut user_defined_constants)?,
+            false_: create_constant_string("false", &mut module, &mut data_context, &mut user_defined_constants)?,
+            right: create_constant_string("right", &mut module, &mut data_context, &mut user_defined_constants)?,
+            wrong: create_constant_string("wrong", &mut module, &mut data_context, &mut user_defined_constants)?,
+            correct: create_constant_string("correct", &mut module, &mut data_context, &mut user_defined_constants)?,
+            incorrect: create_constant_string("incorrect", &mut module, &mut data_context, &mut user_defined_constants)?,
+            nothing: create_constant_string("nothing", &mut module, &mut data_context, &mut user_defined_constants)?,
+            percent_g: create_constant_string("%g", &mut module, &mut data_context, &mut user_defined_constants)?,
+            _and_: create_constant_string(" and ", &mut module, &mut data_context, &mut user_defined_constants)?,
+            user_defined: user_defined_constants
+        };
+        Ok(Sender {
             triple,
             module,
-            data_context: DataContext::new(),
-            constants: HashSet::new(),
+            data_context,
             pointer_type,
-        }
+            string_constants
+        })
+    }
+
+    fn create_constant_string(&mut self, string: &str) -> ReportResult<DataId> {
+        create_constant_string(string, &mut self.module, &mut self.data_context, &mut self.string_constants.user_defined)
     }
 
     fn is_windows(&self) -> bool {
