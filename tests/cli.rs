@@ -1,8 +1,5 @@
-use std::process::Command;
-
 use assert_cmd::cargo::CargoError;
-use assert_cmd::prelude::*;
-use std::path::PathBuf;
+use assert_cmd::Command;
 
 type TestResult = Result<(), CargoError>;
 
@@ -154,8 +151,7 @@ fn number_gusser() -> TestResult {
 
     cmd.arg("gallop").arg("examples/number_guesser.fpp");
 
-    cmd.with_stdin()
-        .buffer("\nhigher\nyes\n")
+    cmd.write_stdin("\nhigher\nyes\n")
         .assert()
         .success()
         .stdout(
