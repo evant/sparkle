@@ -1,7 +1,7 @@
 use nom::branch::alt;
 use nom::bytes::complete::{is_a, is_not, tag, take_till1, take_while};
 use nom::character::complete::space1;
-use nom::combinator::{complete, cond, map, opt, recognize};
+use nom::combinator::{complete, map, opt, recognize};
 use nom::error::{convert_error, ErrorKind, ParseError, VerboseError};
 use nom::multi::{fold_many0, many0, many1, separated_nonempty_list};
 use nom::number::complete::double;
