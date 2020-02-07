@@ -15,7 +15,7 @@ fn hello_equestria() -> TestResult {
 
     cmd.arg("gallop").arg("examples/hello_equestria.fpp");
 
-    let out = cmd.output().unwrap().stdout;
+    let _out = cmd.output().unwrap().stdout;
 
     cmd.assert()
         .success()

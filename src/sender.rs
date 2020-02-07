@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+
 use std::ffi::{CStr, CString};
 use std::fs::File;
 use std::io::Write;
@@ -59,7 +59,7 @@ pub fn gallop_mane(report: &Report, target: &str) -> ReportResult<()> {
     })?;
     sender.finalize(&mut context);
     let code = sender.module.get_finalized_function(id);
-    let code = unsafe { mem::transmute::<_, fn() -> (isize)>(code) };
+    let code = unsafe { mem::transmute::<_, fn() -> isize>(code) };
 
     code();
 
@@ -416,7 +416,7 @@ fn send_statement<'a, B: Backend>(
     match statement {
         Statement::Print(expr) => send_print_statement(expr, true, sender, vars, function_sender),
         Statement::Read(var, type_, prompt) => {
-            send_read_statement(var, type_, prompt, sender, vars, function_sender)
+            send_read_statement(var, *type_, prompt, sender, vars, function_sender)
         }
         Statement::Declare(DeclareVar(var, type_, expr, is_const)) => {
             send_declare_statement(var, *type_, expr, *is_const, sender, vars, function_sender)
@@ -452,7 +452,7 @@ fn send_statement<'a, B: Backend>(
             function_sender,
         ),
         Statement::For(type_, var, from, to, body) => send_for_statement(
-            type_,
+            *type_,
             var,
             from,
             to,
@@ -567,7 +567,7 @@ fn print<B: Backend>(
 
 fn send_read_statement<'a, B: Backend>(
     var: &LValue<'a>,
-    declared_type: &Option<crate::types::Type>,
+    declared_type: Option<crate::types::Type>,
     prompt: &Option<Expr<'a>>,
     sender: &mut Sender<B>,
     vars: &mut Callables<'a>,
@@ -580,7 +580,7 @@ fn send_read_statement<'a, B: Backend>(
         function_sender,
         |type_, sender, vars, function_sender| {
             if let Some(t) = declared_type {
-                type_.check(*t)?;
+                type_.check(t)?;
             }
 
             if let Some(expr) = prompt {
@@ -1100,7 +1100,7 @@ fn send_do_while_statement<'a, B: Backend>(
 }
 
 fn send_for_statement<'a, B: Backend>(
-    type_: &Option<crate::types::Type>,
+    type_: Option<crate::types::Type>,
     var: &pst::Variable<'a>,
     from: &Expr,
     to: &Expr,
@@ -1111,7 +1111,7 @@ fn send_for_statement<'a, B: Backend>(
     function_sender: &mut FunctionSender,
 ) -> ReportResult<()> {
     if let Some(type_) = type_ {
-        Number.check(*type_)?;
+        Number.check(type_)?;
     }
     let (from_type, from_value) = send_expression(from, sender, vars, function_sender)?;
     Number.check(from_type)?;
@@ -1381,7 +1381,7 @@ fn send_update_var_statement<'a, 'b, B: Backend>(
 
 fn send_array_expression<'a, B: Backend>(
     element_type: crate::types::ArrayType,
-    exprs: &Vec<Expr<'a>>,
+    exprs: &[Expr<'a>],
     is_const: bool,
     sender: &mut Sender<B>,
     vars: &Callables,
@@ -1442,21 +1442,17 @@ fn send_array_expression<'a, B: Backend>(
     );
 
     let mut offset = 0i32;
-    loop {
-        if let Some(expr) = iter.next() {
-            let (expr_type, expr_value) = send_expression(expr, sender, vars, function_sender)?;
-            // ensure all elements are the same type.
-            let t: crate::types::Type = element_type.into();
-            t.check(expr_type)?;
+    while let Some(expr) = iter.next() {
+        let (expr_type, expr_value) = send_expression(expr, sender, vars, function_sender)?;
+        // ensure all elements are the same type.
+        let t: crate::types::Type = element_type.into();
+        t.check(expr_type)?;
 
-            function_sender
-                .builder
-                .ins()
-                .store(MemFlags::new(), expr_value, array, offset);
-            offset += ir_type(sender.pointer_type, expr_type).bytes() as i32;
-        } else {
-            break;
-        }
+        function_sender
+            .builder
+            .ins()
+            .store(MemFlags::new(), expr_value, array, offset);
+        offset += ir_type(sender.pointer_type, expr_type).bytes() as i32;
     }
 
     Ok((Array(element_type), array_header))
@@ -2185,7 +2181,7 @@ fn realloc<B: Backend>(
         .module
         .declare_function("memset", Linkage::Import, &sig)?;
     let local_callee = sender.module.declare_func_in_func(callee, builder.func);
-    let call = builder.ins().call(local_callee, &[s, c, n]);
+    let _call = builder.ins().call(local_callee, &[s, c, n]);
 
     Ok(value)
 }
