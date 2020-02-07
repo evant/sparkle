@@ -10,12 +10,21 @@ const EOL: &str = "\n";
 const EOL: &str = "\r\n";
 
 #[test]
+fn arrays_numbers() -> TestResult {
+    let mut cmd = gallop_report("tests/reports/arrays/numbers.fpp")?;
+
+    cmd.assert()
+        .success()
+        .stdout("1 and 2 and 3\n".replace("\n", EOL));
+
+    Ok(())
+}
+
+#[test]
 fn hello_equestria() -> TestResult {
     let mut cmd = Command::cargo_bin("sparkle")?;
 
     cmd.arg("gallop").arg("examples/hello_equestria.fpp");
-
-    let _out = cmd.output().unwrap().stdout;
 
     cmd.assert()
         .success()
@@ -231,4 +240,12 @@ fn sends_hello_equestria() -> TestResult {
         .stdout("Hello, Equestria!".to_string() + EOL);
 
     Ok(())
+}
+
+fn gallop_report(name: &str) -> Result<Command, CargoError> {
+    let mut cmd = Command::cargo_bin("sparkle")?;
+
+    cmd.arg("gallop").arg(name);
+
+    Ok(cmd)
 }

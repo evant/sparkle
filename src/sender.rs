@@ -1,4 +1,3 @@
-
 use std::ffi::{CStr, CString};
 use std::fs::File;
 use std::io::Write;
@@ -501,7 +500,7 @@ fn send_print_statement<'a, B: Backend>(
             function_sender.builder.seal_block(merge_block);
             let string = function_sender.builder.ebb_params(merge_block)[0];
             let len = chars_len(string, sender, &mut function_sender.builder);
-            let value =  chars_data(string, sender, &mut function_sender.builder);
+            let value = chars_data(string, sender, &mut function_sender.builder);
             (value, len)
         }
         Number => {
@@ -522,10 +521,11 @@ fn send_print_statement<'a, B: Backend>(
             let len = chars_len(string, sender, &mut function_sender.builder);
             let value = chars_data(string, sender, &mut function_sender.builder);
             (value, len)
-        },
+        }
         Array(array_type) => {
             let buff_size = calculate_buff_size(type_, value, sender, &mut function_sender.builder)?;
             let buff = alloc(buff_size, 1, sender, &mut function_sender.builder)?;
+
             let len = write_array_as_string(array_type, value, buff, sender, &mut function_sender.builder)?;
             (buff, len)
         }
@@ -565,6 +565,25 @@ fn print<B: Backend>(
     Ok(())
 }
 
+// helper for debugging issues
+fn printf<B: Backend>(format: &str, value: Value, sender: &mut Sender<B>, builder: &mut FunctionBuilder) -> ReportResult<()> {
+    let mut sig = sender.module.make_signature();
+    sig.params.push(AbiParam::new(sender.pointer_type));
+    sig.params.push(AbiParam::new(sender.pointer_type));
+    sig.returns.push(AbiParam::new(sender.pointer_type));
+    let callee = sender
+        .module
+        .declare_function("printf", Linkage::Import, &sig)?;
+
+    let str = create_constant_string(&format, &mut sender.module, &mut sender.data_context, &mut sender.string_constants.user_defined)?;
+    let format_value = reference_constant_string_data(str, sender, builder)?;
+
+    let local_callee = sender.module.declare_func_in_func(callee, builder.func);
+    let _call = builder.ins().call(local_callee, &[format_value, value]);
+
+    Ok(())
+}
+
 fn send_read_statement<'a, B: Backend>(
     var: &LValue<'a>,
     declared_type: Option<crate::types::Type>,
@@ -598,11 +617,11 @@ fn send_read_statement<'a, B: Backend>(
                     function_sender.builder.ins().store(MemFlags::new(), one, buff, 0);
 
                     let data = chars_data(buff, sender, &mut function_sender.builder);
-                    let str_len =  function_sender.builder.ins().iconst(sender.pointer_type, str_len);
+                    let str_len = function_sender.builder.ins().iconst(sender.pointer_type, str_len);
                     let len = read_line_stdin(data, str_len, sender, &mut function_sender.builder)?;
                     set_chars_len(buff, len, sender, &mut function_sender.builder);
                     buff
-                },
+                }
                 Number => {
                     let slot = function_sender
                         .builder
@@ -614,7 +633,7 @@ fn send_read_statement<'a, B: Backend>(
                     let buff_size = function_sender.builder.ins().iconst(types::I64, 24);
                     let _len = read_line_stdin(buff, buff_size, sender, &mut function_sender.builder)?;
                     string_to_double(buff, sender, &mut function_sender.builder)?
-                },
+                }
                 Boolean => {
                     let slot = function_sender
                         .builder
@@ -1631,21 +1650,23 @@ fn write_value_as_string<B: Backend>(
     let result = match type_ {
         Chars => {
             write_chars(value, buff, offset, sender, builder)
-        },
+        }
         Number => {
             let buff_size = builder.ins().iconst(types::I64, 24);
+            let buff = builder.ins().iadd(buff, offset);
+            let int_num = builder.ins().fcvt_to_sint(sender.pointer_type, value);
             let len = write_float_as_string(value, buff, buff_size, sender, builder)?;
             builder.ins().iadd(offset, len)
         }
         Boolean => {
             let string = bool_to_string(value, sender, builder)?;
             write_chars(string, buff, offset, sender, builder)
-        },
+        }
         Array(type_) => {
             let buff = builder.ins().iadd(buff, offset);
             let len = write_array_as_string(type_, value, buff, sender, builder)?;
             builder.ins().iadd(offset, len)
-        },
+        }
     };
     Ok(result)
 }
@@ -1659,7 +1680,7 @@ fn write_chars<B: Backend>(
 ) -> Value {
     let len = chars_len(value, sender, builder);
     let src = chars_data(value, sender, builder);
-    let dst =  builder.ins().iadd(buff, offset);
+    let dst = builder.ins().iadd(buff, offset);
     builder.call_memcpy(sender.module.target_config(), dst, src, len);
     builder.ins().iadd(offset, len)
 }
@@ -1739,7 +1760,7 @@ fn calculate_buff_size<B: Backend>(
                 }
                 ArrayType::Number => {
                     builder.ins().imul_imm(size, 24)
-                },
+                }
                 ArrayType::Boolean => {
                     builder.ins().imul_imm(size, 3)
                 }
@@ -1881,7 +1902,7 @@ fn create_constant_string<B: Backend>(string: &str,
     Ok(id)
 }
 
-fn create_zero_init<B: Backend>(name: &str, size: usize, module: &mut Module<B>, data_context: &mut DataContext) -> ReportResult<DataId>{
+fn create_zero_init<B: Backend>(name: &str, size: usize, module: &mut Module<B>, data_context: &mut DataContext) -> ReportResult<DataId> {
     data_context.define_zeroinit(size);
     let id = module.declare_data(name, Linkage::Export, true, Option::None)?;
     module.define_data(id, &data_context)?;
@@ -2072,6 +2093,7 @@ fn write_array_as_string<B: Backend>(
     );
 
     let new_buff_offset = write_value_as_string(type_.into(), value, buff, buff_offset, sender, builder)?;
+    builder.ins().stack_store(new_buff_offset, buff_offset_slot, 0);
 
     let merge_block = builder.create_ebb();
 
@@ -2190,7 +2212,7 @@ fn chars_len<B: Backend>(value: Value, sender: &Sender<B>, builder: &mut Functio
     builder.ins().load(sender.pointer_type, MemFlags::new(), value, sender.pointer_type.bytes() as i32)
 }
 
-fn set_chars_len<B: Backend>(value: Value, len: Value, sender: &Sender<B>,builder: &mut FunctionBuilder) {
+fn set_chars_len<B: Backend>(value: Value, len: Value, sender: &Sender<B>, builder: &mut FunctionBuilder) {
     builder.ins().store(MemFlags::new(), len, value, sender.pointer_type.bytes() as i32);
 }
 
