@@ -184,6 +184,26 @@ fn cakes() -> TestResult {
 }
 
 #[test]
+fn echo() -> TestResult {
+    let mut cmd = Command::cargo_bin("sparkle")?;
+
+    cmd.arg("gallop").arg("examples/echo.fpp");
+
+    cmd.write_stdin("Rainbow Dash\n10.2\n")
+        .assert()
+        .success()
+        .stdout(
+            "Hello! What is your name?\n\
+             Hi Rainbow Dash!\n\
+             What is your favorite number?\n\
+             Wow! My favorite number is also 10.2!\n"
+                .replace("\n", EOL),
+        );
+
+    Ok(())
+}
+
+#[test]
 fn sends_hello_equestria() -> TestResult {
     let mut cmd = Command::cargo_bin("sparkle")?;
 
