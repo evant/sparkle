@@ -10,11 +10,11 @@ path = "src/mane.rs"
 
 [dependencies]
 nom = { version = "5.0.1", default-features = false, features = ["std"] }
-cranelift = { git = "https://github.com/bytecodealliance/cranelift.git", rev = "545d40b" }
-cranelift-module = { git = "https://github.com/bytecodealliance/cranelift.git", rev = "545d40b" }
-cranelift-simplejit = { git = "https://github.com/bytecodealliance/cranelift.git", rev = "545d40b" }
-cranelift-object = { git = "https://github.com/bytecodealliance/cranelift.git", rev = "545d40b" }
-target-lexicon = "0.9.0"
+cranelift = "0.68.0"
+cranelift-module = "0.68.0"
+cranelift-simplejit = "0.68.0"
+cranelift-object = "0.68.0"
+target-lexicon = "0.11.1"
 cc = "1.0.48"
 
 [dev-dependencies]
