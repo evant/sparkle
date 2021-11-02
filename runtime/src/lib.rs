@@ -53,11 +53,12 @@ pub extern "C" fn println_chars(str: *const Chars) {
 pub extern "C" fn print_chars(str: *const Chars) {
     unsafe {
         match str.as_ref() {
-            None => println!("nothing"),
+            None => print!("nothing"),
             Some(str) => {
                 print!("{}", std::str::from_utf8_unchecked(str.as_slice()));
             }
         }
+        stdout().flush();
     }
 }
 
@@ -69,6 +70,7 @@ pub extern "C" fn println_bool(bool: bool) {
 #[no_mangle]
 pub extern "C" fn print_bool(bool: bool) {
     print!("{}", if bool { "yes" } else { "no" });
+    stdout().flush();
 }
 
 #[no_mangle]
@@ -79,6 +81,7 @@ pub extern "C" fn println_num(float: f64) {
 #[no_mangle]
 pub extern "C" fn print_num(float: f64) {
     print!("{}", float);
+    stdout().flush();
 }
 
 #[no_mangle]
@@ -120,7 +123,9 @@ fn println_array<T: Display>(array: &Array<T>) {
 
 fn print_array<T: Display>(array: &Array<T>) {
     match write_array(stdout(), array, false) {
-        Ok(_) => {}
+        Ok(_) => {
+            stdout().flush();
+        }
         Err(_) => exit(1),
     }
 }
