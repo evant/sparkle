@@ -7,7 +7,7 @@ type TestResult = Result<(), CargoError>;
 const EOL: &str = "\n";
 
 #[cfg(target_os = "windows")]
-const EOL: &str = "\r\n";
+const EOL: &str = "\n";
 
 #[test]
 fn arrays_numbers() -> TestResult {

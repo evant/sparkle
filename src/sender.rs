@@ -1600,13 +1600,19 @@ fn write_value_as_string<M: Module>(
     let result = match type_ {
         Chars => write_chars(value, buff, offset, sender, &mut function_sender.builder),
         Number => {
-            let buff_size = function_sender.builder.ins().iconst(types::I64, 24);
+            let buff_size = function_sender.builder.ins().iconst(sender.pointer_type, 24);
             let buff = function_sender.builder.ins().iadd(buff, offset);
             let _int_num = function_sender
                 .builder
                 .ins()
                 .fcvt_to_sint(sender.pointer_type, value);
-            let len = write_float_as_string(value, buff, buff_size, sender, function_sender)?;
+            let len = sender.call_external_fn_for_result(
+                &mut function_sender.builder,
+                "write_num", 
+                &[sender.pointer_type, sender.pointer_type, types::F64],
+                 sender.pointer_type,
+                 &[buff, buff_size, value]
+                )?;
             function_sender.builder.ins().iadd(offset, len)
         }
         Boolean => {
@@ -1885,103 +1891,6 @@ fn create_zero_init<M: Module>(
     module.define_data(id, &data_context)?;
     data_context.clear();
     Ok(id)
-}
-
-fn write_float_as_string<M: Module>(
-    float_value: Value,
-    buffer_value: Value,
-    buffer_size: Value,
-    sender: &mut Sender<M>,
-    function_sender: &mut FunctionSender,
-) -> ReportResult<Value> {
-    let mut sig = sender.module.make_signature();
-    let result = if sender.is_windows() {
-        // use _gcvt on windows as snprintf is inlined so there's no symbol to dynamically link to.
-        sig.params.push(AbiParam::new(types::F64));
-        sig.params.push(AbiParam::new(types::I32));
-        sig.params.push(AbiParam::new(sender.pointer_type));
-        sig.returns.push(AbiParam::new(sender.pointer_type));
-
-        let callee = sender
-            .module
-            .declare_function("_gcvt", Linkage::Import, &sig)?;
-        let local_callee = sender
-            .module
-            .declare_func_in_func(callee, function_sender.builder.func);
-
-        let two = function_sender.builder.ins().iconst(types::I64, 2);
-        let s = function_sender.builder.ins().isub(buffer_size, two);
-        let digits = function_sender.builder.ins().ireduce(types::I32, s);
-        let call = function_sender
-            .builder
-            .ins()
-            .call(local_callee, &[float_value, digits, buffer_value]);
-        let result = function_sender.builder.inst_results(call)[0];
-
-        // _gcvt always inserts a decimal at the end, ex: 10 -> "10.", strip it if this happens.
-        let len = strlen(result, sender, &mut function_sender.builder)?;
-        let one = function_sender.builder.ins().iconst(types::I64, 1);
-        let last_char_index = function_sender.builder.ins().isub(len, one);
-        let last_char_ptr = function_sender.builder.ins().iadd(result, last_char_index);
-        let last_char =
-            function_sender
-                .builder
-                .ins()
-                .load(types::I8, MemFlags::new(), last_char_ptr, 0);
-        let cmp = function_sender
-            .builder
-            .ins()
-            .icmp_imm(IntCC::Equal, last_char, b'.' as i64);
-
-        let merge_block = function_sender.builder.create_block();
-
-        function_sender.builder.ins().brz(cmp, merge_block, &[len]);
-
-        let continue_block = function_sender.builder.create_block();
-        function_sender.builder.ins().jump(continue_block, &[]);
-        function_sender.builder.switch_to_block(continue_block);
-
-        let zero = function_sender.builder.ins().iconst(types::I8, 0);
-        function_sender
-            .builder
-            .ins()
-            .store(MemFlags::new(), zero, last_char_ptr, 0);
-        let len = function_sender.builder.ins().isub(len, one);
-
-        function_sender.builder.ins().jump(merge_block, &[len]);
-
-        function_sender.builder.switch_to_block(merge_block);
-        function_sender.seal_block(merge_block);
-        function_sender.seal_block(continue_block);
-
-        function_sender.builder.block_params(merge_block)[0]
-    } else {
-        sig.params.push(AbiParam::new(sender.pointer_type));
-        sig.params.push(AbiParam::new(types::I64));
-        sig.params.push(AbiParam::new(sender.pointer_type));
-        sig.params.push(AbiParam::new(types::F64));
-        sig.returns.push(AbiParam::new(sender.pointer_type));
-
-        let callee = sender
-            .module
-            .declare_function("snprintf", Linkage::Import, &sig)?;
-        let local_callee = sender
-            .module
-            .declare_func_in_func(callee, function_sender.builder.func);
-
-        let format = reference_constant_string_data(
-            sender.string_constants.percent_g,
-            sender,
-            &mut function_sender.builder,
-        )?;
-        let call = function_sender.builder.ins().call(
-            local_callee,
-            &[buffer_value, buffer_size, format, float_value],
-        );
-        function_sender.builder.inst_results(call)[0]
-    };
-
-    Ok(result)
 }
 
 fn bool_to_string<M: Module>(

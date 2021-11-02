@@ -34,6 +34,7 @@ pub const SYMBOLS: &'static [(&'static str, *const u8)] = &[
     runtime_sym!(read_bool),
     runtime_sym!(read_num),
     runtime_sym!(compare_chars),
+    runtime_sym!(write_num),
 ];
 
 #[no_mangle]
@@ -200,4 +201,14 @@ pub extern "C" fn concat_chars_num(a: Chars, b: f64) -> *const Chars {
 
 fn concat<A: AsStringBytes, B: AsStringBytes>(a: A, b: B) -> Box<Chars> {
     Chars::empty().append(a).append(b)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn write_num(buff: *mut u8, len: usize, num: f64) -> usize {
+    let mut slice = std::slice::from_raw_parts_mut(buff, len);
+    let str = num.to_string();
+    let bytes = str.as_bytes();
+    let len = bytes.len();
+    slice.write_all(bytes).unwrap();
+    return len;
 }
