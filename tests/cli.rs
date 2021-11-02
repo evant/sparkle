@@ -7,15 +7,24 @@ type TestResult = Result<(), CargoError>;
 const EOL: &str = "\n";
 
 #[cfg(target_os = "windows")]
-const EOL: &str = "\r\n";
+const EOL: &str = "\n";
+
+#[test]
+fn arrays_numbers() -> TestResult {
+    let mut cmd = gallop_report("tests/reports/arrays/numbers.fpp")?;
+
+    cmd.assert()
+        .success()
+        .stdout("1 and 2 and 3\n".replace("\n", EOL));
+
+    Ok(())
+}
 
 #[test]
 fn hello_equestria() -> TestResult {
     let mut cmd = Command::cargo_bin("sparkle")?;
 
     cmd.arg("gallop").arg("examples/hello_equestria.fpp");
-
-    let out = cmd.output().unwrap().stdout;
 
     cmd.assert()
         .success()
@@ -184,6 +193,26 @@ fn cakes() -> TestResult {
 }
 
 #[test]
+fn echo() -> TestResult {
+    let mut cmd = Command::cargo_bin("sparkle")?;
+
+    cmd.arg("gallop").arg("examples/echo.fpp");
+
+    cmd.write_stdin("Rainbow Dash\n10.2\n")
+        .assert()
+        .success()
+        .stdout(
+            "Hello! What is your name?\n\
+             Hi Rainbow Dash!\n\
+             What is your favorite number?\n\
+             Wow! My favorite number is also 10.2!\n"
+                .replace("\n", EOL),
+        );
+
+    Ok(())
+}
+
+#[test]
 fn sends_hello_equestria() -> TestResult {
     let mut cmd = Command::cargo_bin("sparkle")?;
 
@@ -211,4 +240,12 @@ fn sends_hello_equestria() -> TestResult {
         .stdout("Hello, Equestria!".to_string() + EOL);
 
     Ok(())
+}
+
+fn gallop_report(name: &str) -> Result<Command, CargoError> {
+    let mut cmd = Command::cargo_bin("sparkle")?;
+
+    cmd.arg("gallop").arg(name);
+
+    Ok(cmd)
 }
