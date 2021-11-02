@@ -6,21 +6,21 @@ use std::os::raw::c_char;
 use std::path::Path;
 use std::str::FromStr;
 
-use cranelift::codegen::binemit::NullTrapSink;
+use cranelift::codegen::binemit::{NullStackMapSink, NullTrapSink};
 use cranelift::codegen::Context;
-use cranelift::prelude::settings::{self, Configurable};
 use cranelift::prelude::*;
-use cranelift::prelude::{isa, AbiParam, FunctionBuilder, FunctionBuilderContext};
-use cranelift_module::{default_libcall_names, DataContext, DataId, FuncId, Linkage, Module};
+use cranelift::prelude::{AbiParam, FunctionBuilder, FunctionBuilderContext, isa};
+use cranelift::prelude::settings::{self, Configurable};
+use cranelift_jit::{JITBuilder, JITModule};
+use cranelift_module::{DataContext, DataId, default_libcall_names, FuncId, Linkage, Module};
 use cranelift_object::{ObjectBuilder, ObjectModule};
-use cranelift_simplejit::{SimpleJITBuilder, SimpleJITModule};
 use nom::lib::std::collections::HashMap;
 use target_lexicon::{OperatingSystem, Triple};
 
 use crate::error::ReportError;
 use crate::pst;
 use crate::pst::{
-    Arg, BinOperator, Call, Declaration, DeclareVar, Expr, Index, LValue, Literal, Paragraph,
+    Arg, BinOperator, Call, Declaration, DeclareVar, Expr, Index, Literal, LValue, Paragraph,
     Report, Statement,
 };
 use crate::types::ArrayType;
@@ -128,11 +128,7 @@ pub fn proofread<'a>(report: &'a Report<'a>, target: &str) -> ReportResult<()> {
 
     let mut buff = String::new();
     send(&report, &mut sender, &mut globals, |sender, context| {
-        cranelift::codegen::write_function(
-            &mut buff,
-            &context.func,
-            &Some(sender.module.isa()).into(),
-        )?;
+        cranelift::codegen::write_function(&mut buff, &context.func)?;
         Ok(())
     })?;
 
@@ -154,11 +150,11 @@ fn object_sender(name: &str, target: &str) -> ReportResult<Sender<ObjectModule>>
     Ok(Sender::new(module, triple)?)
 }
 
-fn simple_jit_sender(target: &str) -> ReportResult<Sender<SimpleJITModule>> {
+fn simple_jit_sender(target: &str) -> ReportResult<Sender<JITModule>> {
     let triple = Triple::from_str(target)?;
-    let mut builder = SimpleJITBuilder::new(default_libcall_names());
+    let mut builder = JITBuilder::new(default_libcall_names());
     builder.symbols(sparkle::SYMBOLS.iter().map(|e| *e));
-    let module = SimpleJITModule::new(builder);
+    let module = JITModule::new(builder);
 
     Ok(Sender::new(module, triple)?)
 }
@@ -210,7 +206,7 @@ fn send<'a, M: Module>(
 
     sender
         .module
-        .define_function(init_globals, &mut context, &mut NullTrapSink::default())?;
+        .define_function(init_globals, &mut context, &mut NullTrapSink::default(), &mut NullStackMapSink {})?;
     f(sender, &mut context)?;
     sender.module.clear_context(&mut context);
 
@@ -316,7 +312,7 @@ fn send_mane<M: Module>(
 
     sender
         .module
-        .define_function(id, context, &mut NullTrapSink::default())?;
+        .define_function(id, context, &mut NullTrapSink::default(), &mut NullStackMapSink {})?;
     f(sender, context)?;
     sender.module.clear_context(context);
 
@@ -398,7 +394,7 @@ fn send_paragraph<'a, M: Module>(
     function_sender.builder.finalize();
     sender
         .module
-        .define_function(func_id, context, &mut NullTrapSink::default())?;
+        .define_function(func_id, context, &mut NullTrapSink::default(), &mut NullStackMapSink{})?;
     f(sender, context)?;
     sender.module.clear_context(context);
 
@@ -478,7 +474,6 @@ fn send_print_statement<'a, M: Module>(
 ) -> ReportResult<()> {
     let (type_, value) = send_expression(expr, sender, vars, function_sender)?;
 
-
     let (fun, arg_type) = match type_ {
         Chars => ("chars", sender.pointer_type),
         Number => ("num", types::F64),
@@ -495,7 +490,12 @@ fn send_print_statement<'a, M: Module>(
 
     let prefix = if newline { "println_" } else { "print_" }.to_string();
 
-    sender.call_external_fn(&mut function_sender.builder, &(prefix + fun), &[arg_type], &[value])?;
+    sender.call_external_fn(
+        &mut function_sender.builder,
+        &(prefix + fun),
+        &[arg_type],
+        &[value],
+    )?;
 
     Ok(())
 }
@@ -2579,7 +2579,7 @@ impl<'b> FunctionSender<'b> {
         #[cfg(debug_assertions)]
         {
             if let Err((inst, msg)) = self.builder.func.is_block_basic(block) {
-                let inst_str = self.builder.func.dfg.display_inst(inst, None);
+                let inst_str = self.builder.func.dfg.display_inst(inst);
                 panic!(
                     "{} failed basic block invariants on {}, {}",
                     block, inst_str, msg
