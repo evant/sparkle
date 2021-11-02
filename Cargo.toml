@@ -4,6 +4,10 @@ version = "0.1.0"
 authors = ["Evan Tatarka <evan@tatarka.me>"]
 edition = "2018"
 
+[workspace]
+members = [".", "runtime"]
+default-members = [".", "runtime"]
+
 [[bin]]
 name = "sparkle"
 path = "src/mane.rs"
@@ -16,8 +20,14 @@ cranelift-simplejit = "0.68.0"
 cranelift-object = "0.68.0"
 target-lexicon = "0.11.1"
 cc = "1.0.48"
+runtime = { path = "./runtime" }
 
 [dev-dependencies]
 assert_cmd = "0.12.0"
 predicates = "1.0.2"
 spectral = "0.6.0"
+
+[profile.release]
+panic = "abort"
+lto = true
+opt-level = "z"

@@ -2,7 +2,6 @@ use std::ffi::{CStr, CString};
 use std::fs::File;
 use std::io::Write;
 use std::mem;
-use std::ops::Add;
 use std::os::raw::c_char;
 use std::path::Path;
 use std::str::FromStr;
@@ -27,7 +26,6 @@ use crate::pst::{
 use crate::types::ArrayType;
 use crate::types::Type::{Array, Boolean, Chars, Number};
 use crate::vars::{Callable, Callables};
-use cranelift::codegen::ir::entities::AnyEntity;
 
 type ReportResult<T> = Result<T, ReportError>;
 
@@ -158,7 +156,8 @@ fn object_sender(name: &str, target: &str) -> ReportResult<Sender<ObjectModule>>
 
 fn simple_jit_sender(target: &str) -> ReportResult<Sender<SimpleJITModule>> {
     let triple = Triple::from_str(target)?;
-    let builder = SimpleJITBuilder::new(default_libcall_names());
+    let mut builder = SimpleJITBuilder::new(default_libcall_names());
+    builder.symbols(sparkle::SYMBOLS.iter().map(|e| *e));
     let module = SimpleJITModule::new(builder);
 
     Ok(Sender::new(module, triple)?)
@@ -479,76 +478,24 @@ fn send_print_statement<'a, M: Module>(
 ) -> ReportResult<()> {
     let (type_, value) = send_expression(expr, sender, vars, function_sender)?;
 
-    let (value, len) = match type_ {
-        Chars => {
-            // If this is a null pointer, we need to print 'nothing' instead.
-            let merge_block = function_sender.builder.create_block();
-            function_sender
-                .builder
-                .append_block_param(merge_block, sender.pointer_type);
-            let res = function_sender
-                .builder
-                .ins()
-                .icmp_imm(IntCC::Equal, value, 0);
-            let nothing = reference_constant_string(
-                sender.string_constants.nothing,
-                sender,
-                &mut function_sender.builder,
-            )?;
-            function_sender
-                .builder
-                .ins()
-                .brz(res, merge_block, &[value]);
-            function_sender.builder.ins().jump(merge_block, &[nothing]);
-            function_sender.builder.switch_to_block(merge_block);
-            function_sender.seal_block(merge_block);
-            let string = function_sender.builder.block_params(merge_block)[0];
-            let len = chars_len(string, sender, &mut function_sender.builder);
-            let value = chars_data(string, sender, &mut function_sender.builder);
-            (value, len)
-        }
-        Number => {
-            // convert to string
-            let slot = function_sender
-                .builder
-                .create_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, 24));
-            let buff = function_sender
-                .builder
-                .ins()
-                .stack_addr(sender.pointer_type, slot, 0);
-            let buff_size = function_sender.builder.ins().iconst(types::I64, 24);
-            let len = write_float_as_string(
-                value,
-                buff,
-                buff_size,
-                sender,
-                function_sender,
-            )?;
-            (buff, len)
-        }
-        Boolean => {
-            let string = bool_to_string(value, sender, function_sender)?;
-            let len = chars_len(string, sender, &mut function_sender.builder);
-            let value = chars_data(string, sender, &mut function_sender.builder);
-            (value, len)
-        }
-        Array(array_type) => {
-            let buff_size =
-                calculate_buff_size(type_, value, sender, function_sender)?;
-            let buff = alloc(buff_size, 1, sender, &mut function_sender.builder)?;
 
-            let len = write_array_as_string(
-                array_type,
-                value,
-                buff,
-                sender,
-                function_sender,
-            )?;
-            (buff, len)
-        }
+    let (fun, arg_type) = match type_ {
+        Chars => ("chars", sender.pointer_type),
+        Number => ("num", types::F64),
+        Boolean => ("bool", types::I32),
+        Array(array_type) => (
+            match array_type {
+                ArrayType::Chars => "array_chars",
+                ArrayType::Number => "array_num",
+                ArrayType::Boolean => "array_bool",
+            },
+            sender.pointer_type,
+        ),
     };
 
-    print(value, len, newline, sender, &mut function_sender.builder)?;
+    let prefix = if newline { "println_" } else { "print_" }.to_string();
+
+    sender.call_external_fn(&mut function_sender.builder, &(prefix + fun), &[arg_type], &[value])?;
 
     Ok(())
 }
@@ -634,182 +581,20 @@ fn send_read_statement<'a, M: Module>(
                 send_print_statement(expr, false, sender, vars, function_sender)?;
             }
 
-            let parsed_value = match type_ {
-                Chars => {
-                    let str_len = 2056;
-                    let header_size = sender.pointer_type.bytes() as i64 * 2;
-                    let buff_size = function_sender
-                        .builder
-                        .ins()
-                        .iconst(sender.pointer_type, header_size + str_len);
-                    let buff = alloc(buff_size, 1, sender, &mut function_sender.builder)?;
-                    // since this function writes to a var, go ahead and bump the ref count
-                    let one = function_sender.builder.ins().iconst(sender.pointer_type, 1);
-                    function_sender
-                        .builder
-                        .ins()
-                        .store(MemFlags::new(), one, buff, 0);
-
-                    let data = chars_data(buff, sender, &mut function_sender.builder);
-                    let str_len = function_sender
-                        .builder
-                        .ins()
-                        .iconst(sender.pointer_type, str_len);
-                    let len = read_line_stdin(data, str_len, sender, &mut function_sender.builder)?;
-                    set_chars_len(buff, len, sender, &mut function_sender.builder);
-                    buff
-                }
-                Number => {
-                    let slot = function_sender
-                        .builder
-                        .create_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, 24));
-                    let buff =
-                        function_sender
-                            .builder
-                            .ins()
-                            .stack_addr(sender.pointer_type, slot, 0);
-                    let buff_size = function_sender.builder.ins().iconst(types::I64, 24);
-                    let _len =
-                        read_line_stdin(buff, buff_size, sender, &mut function_sender.builder)?;
-                    string_to_double(buff, sender, &mut function_sender.builder)?
-                }
-                Boolean => {
-                    let slot = function_sender
-                        .builder
-                        .create_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, 10));
-                    let buff =
-                        function_sender
-                            .builder
-                            .ins()
-                            .stack_addr(sender.pointer_type, slot, 0);
-                    let buff_size = function_sender.builder.ins().iconst(types::I64, 10);
-                    let len =
-                        read_line_stdin(buff, buff_size, sender, &mut function_sender.builder);
-                    let line = buff;
-
-                    let merge_block = function_sender.builder.create_block();
-                    function_sender
-                        .builder
-                        .append_block_param(merge_block, types::I32);
-
-                    let yes = reference_constant_string_data(
-                        sender.string_constants.yes,
-                        sender,
-                        &mut function_sender.builder,
-                    )?;
-                    let no = reference_constant_string_data(
-                        sender.string_constants.no,
-                        sender,
-                        &mut function_sender.builder,
-                    )?;
-                    let true_ = reference_constant_string_data(
-                        sender.string_constants.true_,
-                        sender,
-                        &mut function_sender.builder,
-                    )?;
-                    let false_ = reference_constant_string_data(
-                        sender.string_constants.false_,
-                        sender,
-                        &mut function_sender.builder,
-                    )?;
-                    let right = reference_constant_string_data(
-                        sender.string_constants.right,
-                        sender,
-                        &mut function_sender.builder,
-                    )?;
-                    let wrong = reference_constant_string_data(
-                        sender.string_constants.wrong,
-                        sender,
-                        &mut function_sender.builder,
-                    )?;
-                    let correct = reference_constant_string_data(
-                        sender.string_constants.correct,
-                        sender,
-                        &mut function_sender.builder,
-                    )?;
-                    let incorrect = reference_constant_string_data(
-                        sender.string_constants.incorrect,
-                        sender,
-                        &mut function_sender.builder,
-                    )?;
-
-                    let zero = function_sender.builder.ins().iconst(types::I32, 0);
-                    let one = function_sender.builder.ins().iconst(types::I32, 1);
-
-                    let cmp = compare_strings(line, yes, sender, &mut function_sender.builder)?;
-                    function_sender.builder.ins().brz(cmp, merge_block, &[one]);
-                    let continue_block1 = function_sender.builder.create_block();
-                    function_sender.builder.ins().jump(continue_block1, &[]);
-                    function_sender.builder.switch_to_block(continue_block1);
-
-                    let cmp = compare_strings(line, true_, sender, &mut function_sender.builder)?;
-                    function_sender.builder.ins().brz(cmp, merge_block, &[one]);
-
-                    let continue_block2 = function_sender.builder.create_block();
-                    function_sender.builder.ins().jump(continue_block2, &[]);
-                    function_sender.seal_block(continue_block1);
-                    function_sender.builder.switch_to_block(continue_block2);
-
-                    let cmp = compare_strings(line, right, sender, &mut function_sender.builder)?;
-                    function_sender.builder.ins().brz(cmp, merge_block, &[one]);
-
-                    let continue_block3 = function_sender.builder.create_block();
-                    function_sender.builder.ins().jump(continue_block3, &[]);
-                    function_sender.seal_block(continue_block2);
-                    function_sender.builder.switch_to_block(continue_block3);
-
-                    let cmp = compare_strings(line, correct, sender, &mut function_sender.builder)?;
-                    function_sender.builder.ins().brz(cmp, merge_block, &[one]);
-
-                    let continue_block4 = function_sender.builder.create_block();
-                    function_sender.builder.ins().jump(continue_block4, &[]);
-                    function_sender.seal_block(continue_block3);
-                    function_sender.builder.switch_to_block(continue_block4);
-
-                    let cmp = compare_strings(line, no, sender, &mut function_sender.builder)?;
-                    function_sender.builder.ins().brz(cmp, merge_block, &[zero]);
-
-                    let continue_block5 = function_sender.builder.create_block();
-                    function_sender.builder.ins().jump(continue_block5, &[]);
-                    function_sender.seal_block(continue_block4);
-                    function_sender.builder.switch_to_block(continue_block5);
-
-                    let cmp = compare_strings(line, false_, sender, &mut function_sender.builder)?;
-                    function_sender.builder.ins().brz(cmp, merge_block, &[zero]);
-
-                    let continue_block6 = function_sender.builder.create_block();
-                    function_sender.builder.ins().jump(continue_block6, &[]);
-                    function_sender.seal_block(continue_block5);
-                    function_sender.builder.switch_to_block(continue_block6);
-
-                    let cmp = compare_strings(line, wrong, sender, &mut function_sender.builder)?;
-                    function_sender.builder.ins().brz(cmp, merge_block, &[zero]);
-
-                    let continue_block7 = function_sender.builder.create_block();
-                    function_sender.builder.ins().jump(continue_block7, &[]);
-                    function_sender.seal_block(continue_block6);
-                    function_sender.builder.switch_to_block(continue_block7);
-
-                    let cmp =
-                        compare_strings(line, incorrect, sender, &mut function_sender.builder)?;
-                    function_sender.builder.ins().brz(cmp, merge_block, &[zero]);
-
-                    // TODO: print a useful error.
-                    let trap_block = function_sender.builder.create_block();
-                    function_sender.builder.ins().jump(trap_block, &[]);
-                    function_sender.seal_block(continue_block7);
-                    function_sender.builder.switch_to_block(trap_block);
-
-                    function_sender.builder.ins().trap(TrapCode::User(1));
-                    function_sender.seal_block(trap_block);
-
-                    function_sender.builder.switch_to_block(merge_block);
-                    function_sender.seal_block(merge_block);
-
-                    function_sender.builder.block_params(merge_block)[0]
-                }
+            let (fun, ret_type) = match type_ {
+                Chars => ("read_chars", sender.pointer_type),
+                Number => ("read_num", types::F64),
+                Boolean => ("read_bool", types::I32),
                 Array(_) => unimplemented!(),
             };
+
+            let parsed_value = sender.call_external_fn_for_result(
+                &mut function_sender.builder,
+                fun,
+                &[],
+                ret_type,
+                &[],
+            )?;
 
             Ok((type_, parsed_value))
         },
@@ -1076,12 +861,7 @@ fn send_write_lvalue_statement<'a, M: Module>(
 
             // max(index, size * 2)
             let new_size = function_sender.builder.ins().imul_imm(capacity, 2);
-            let new_size = imax(
-                sender.pointer_type,
-                new_size,
-                index,
-                function_sender,
-            );
+            let new_size = imax(sender.pointer_type, new_size, index, function_sender);
 
             function_sender.builder.ins().store(
                 MemFlags::new(),
@@ -1771,12 +1551,8 @@ fn send_expression<'a, M: Module>(
             for expr in exprs {
                 let (expr_type, expr_value) = send_expression(expr, sender, vars, function_sender)?;
                 values.push((expr_type, expr_value));
-                let value_buff_size = calculate_buff_size(
-                    expr_type,
-                    expr_value,
-                    sender,
-                    function_sender,
-                )?;
+                let value_buff_size =
+                    calculate_buff_size(expr_type, expr_value, sender, function_sender)?;
                 buff_size = function_sender
                     .builder
                     .ins()
@@ -1791,14 +1567,8 @@ fn send_expression<'a, M: Module>(
                 .ins()
                 .iconst(sender.pointer_type, header_size);
             for (type_, value) in &values {
-                offset = write_value_as_string(
-                    *type_,
-                    *value,
-                    buff,
-                    offset,
-                    sender,
-                    function_sender,
-                )?;
+                offset =
+                    write_value_as_string(*type_, *value, buff, offset, sender, function_sender)?;
             }
             let len = function_sender.builder.ins().iadd_imm(offset, -header_size);
             // write actual size
@@ -1832,7 +1602,10 @@ fn write_value_as_string<M: Module>(
         Number => {
             let buff_size = function_sender.builder.ins().iconst(types::I64, 24);
             let buff = function_sender.builder.ins().iadd(buff, offset);
-            let int_num = function_sender.builder.ins().fcvt_to_sint(sender.pointer_type, value);
+            let _int_num = function_sender
+                .builder
+                .ins()
+                .fcvt_to_sint(sender.pointer_type, value);
             let len = write_float_as_string(value, buff, buff_size, sender, function_sender)?;
             function_sender.builder.ins().iadd(offset, len)
         }
@@ -1871,7 +1644,10 @@ fn calculate_buff_size<M: Module>(
 ) -> ReportResult<Value> {
     let result = match type_ {
         Chars => chars_len(value, sender, &mut function_sender.builder),
-        Number => function_sender.builder.ins().iconst(sender.pointer_type, 24),
+        Number => function_sender
+            .builder
+            .ins()
+            .iconst(sender.pointer_type, 24),
         Boolean => function_sender.builder.ins().iconst(sender.pointer_type, 3),
         Array(type_) => {
             let size = array_size(value, sender, &mut function_sender.builder);
@@ -1881,33 +1657,62 @@ fn calculate_buff_size<M: Module>(
                     let zero = function_sender.builder.ins().iconst(sender.pointer_type, 0);
                     let one = function_sender.builder.ins().iconst(sender.pointer_type, 1);
                     let last_index = function_sender.builder.ins().isub(size, one);
-                    let index_slot = function_sender.builder.create_stack_slot(StackSlotData::new(
-                        StackSlotKind::ExplicitSlot,
-                        sender.pointer_type.bytes(),
-                    ));
-                    let buff_size_slot = function_sender.builder.create_stack_slot(StackSlotData::new(
-                        StackSlotKind::ExplicitSlot,
-                        sender.pointer_type.bytes(),
-                    ));
-                    function_sender.builder.ins().stack_store(zero, index_slot, 0);
-                    function_sender.builder.ins().stack_store(zero, buff_size_slot, 0);
+                    let index_slot = function_sender
+                        .builder
+                        .create_stack_slot(StackSlotData::new(
+                            StackSlotKind::ExplicitSlot,
+                            sender.pointer_type.bytes(),
+                        ));
+                    let buff_size_slot =
+                        function_sender
+                            .builder
+                            .create_stack_slot(StackSlotData::new(
+                                StackSlotKind::ExplicitSlot,
+                                sender.pointer_type.bytes(),
+                            ));
+                    function_sender
+                        .builder
+                        .ins()
+                        .stack_store(zero, index_slot, 0);
+                    function_sender
+                        .builder
+                        .ins()
+                        .stack_store(zero, buff_size_slot, 0);
 
                     let header_block = function_sender.builder.create_block();
                     let exit_block = function_sender.builder.create_block();
-                    function_sender.builder.append_block_param(exit_block, sender.pointer_type);
+                    function_sender
+                        .builder
+                        .append_block_param(exit_block, sender.pointer_type);
                     function_sender.builder.ins().jump(header_block, &[]);
                     function_sender.builder.switch_to_block(header_block);
 
-                    let index = function_sender.builder.ins().stack_load(sender.pointer_type, index_slot, 0);
-                    let cmp = function_sender.builder.ins().icmp(IntCC::UnsignedLessThan, index, size);
-                    let buff_size = function_sender.builder.ins().stack_load(types::I64, buff_size_slot, 0);
+                    let index = function_sender.builder.ins().stack_load(
+                        sender.pointer_type,
+                        index_slot,
+                        0,
+                    );
+                    let cmp =
+                        function_sender
+                            .builder
+                            .ins()
+                            .icmp(IntCC::UnsignedLessThan, index, size);
+                    let buff_size =
+                        function_sender
+                            .builder
+                            .ins()
+                            .stack_load(types::I64, buff_size_slot, 0);
 
-                    function_sender.builder.ins().brz(cmp, exit_block, &[buff_size]);
+                    function_sender
+                        .builder
+                        .ins()
+                        .brz(cmp, exit_block, &[buff_size]);
                     let continue_block = function_sender.builder.create_block();
                     function_sender.builder.ins().jump(continue_block, &[]);
                     function_sender.builder.switch_to_block(continue_block);
 
-                    let offset = function_sender.builder
+                    let offset = function_sender
+                        .builder
                         .ins()
                         .imul_imm(index, sender.pointer_type.bytes() as i64);
 
@@ -1920,9 +1725,15 @@ fn calculate_buff_size<M: Module>(
                     let len = chars_len(string, sender, &mut function_sender.builder);
 
                     let new_buff_size = function_sender.builder.ins().iadd(buff_size, len);
-                    function_sender.builder.ins().stack_store(new_buff_size, buff_size_slot, 0);
+                    function_sender
+                        .builder
+                        .ins()
+                        .stack_store(new_buff_size, buff_size_slot, 0);
                     let new_index = function_sender.builder.ins().iadd_imm(index, 1);
-                    function_sender.builder.ins().stack_store(new_index, index_slot, 0);
+                    function_sender
+                        .builder
+                        .ins()
+                        .stack_store(new_index, index_slot, 0);
 
                     function_sender.builder.ins().jump(header_block, &[]);
 
@@ -1961,40 +1772,15 @@ fn send_comparison<M: Module>(
         Boolean,
         match type_ {
             Chars => {
-                // if source is null, throw an exception.
-                let else_block = function_sender.builder.create_block();
-                let merge_block = function_sender.builder.create_block();
-                function_sender
-                    .builder
-                    .ins()
-                    .brz(left_value, else_block, &[]);
-
-                let continue_block = function_sender.builder.create_block();
-                function_sender.builder.ins().jump(continue_block, &[]);
-                function_sender.builder.switch_to_block(continue_block);
-
-                function_sender
-                    .builder
-                    .ins()
-                    .brz(right_value, else_block, &[]);
-                function_sender.builder.ins().jump(merge_block, &[]);
-
-                function_sender.builder.switch_to_block(else_block);
-                function_sender.seal_block(continue_block);
-                function_sender.seal_block(else_block);
-
-                // TODO: print a useful error.
-                function_sender.builder.ins().trap(TrapCode::User(1));
-                function_sender.builder.switch_to_block(merge_block);
-                function_sender.seal_block(merge_block);
-
-                let result = compare_strings(
-                    left_value,
-                    right_value,
-                    sender,
+                let value = sender.call_external_fn_for_result(
                     &mut function_sender.builder,
+                    "compare_chars",
+                    &[sender.pointer_type, sender.pointer_type],
+                    types::I32,
+                    &[left_value, right_value],
                 )?;
-                function_sender.builder.ins().icmp_imm(icc, result, 0)
+                let cmp = function_sender.builder.ins().icmp_imm(icc, value, 0);
+                function_sender.builder.ins().bint(types::I32, cmp)
             }
             Number => {
                 let cmp = function_sender
@@ -2101,29 +1887,6 @@ fn create_zero_init<M: Module>(
     Ok(id)
 }
 
-fn compare_strings<M: Module>(
-    left_value: Value,
-    right_value: Value,
-    sender: &mut Sender<M>,
-    builder: &mut FunctionBuilder,
-) -> ReportResult<Value> {
-    let mut sig = sender.module.make_signature();
-    sig.params.push(AbiParam::new(sender.pointer_type));
-    sig.params.push(AbiParam::new(sender.pointer_type));
-    sig.returns.push(AbiParam::new(types::I32));
-
-    let callee = sender
-        .module
-        .declare_function("strcmp", Linkage::Import, &sig)?;
-    let local_callee = sender
-        .module
-        .declare_func_in_func(callee, &mut builder.func);
-    let call = builder.ins().call(local_callee, &[left_value, right_value]);
-    let result = builder.inst_results(call)[0];
-
-    Ok(result)
-}
-
 fn write_float_as_string<M: Module>(
     float_value: Value,
     buffer_value: Value,
@@ -2142,12 +1905,15 @@ fn write_float_as_string<M: Module>(
         let callee = sender
             .module
             .declare_function("_gcvt", Linkage::Import, &sig)?;
-        let local_callee = sender.module.declare_func_in_func(callee, function_sender.builder.func);
+        let local_callee = sender
+            .module
+            .declare_func_in_func(callee, function_sender.builder.func);
 
         let two = function_sender.builder.ins().iconst(types::I64, 2);
         let s = function_sender.builder.ins().isub(buffer_size, two);
         let digits = function_sender.builder.ins().ireduce(types::I32, s);
-        let call = function_sender.builder
+        let call = function_sender
+            .builder
             .ins()
             .call(local_callee, &[float_value, digits, buffer_value]);
         let result = function_sender.builder.inst_results(call)[0];
@@ -2157,10 +1923,15 @@ fn write_float_as_string<M: Module>(
         let one = function_sender.builder.ins().iconst(types::I64, 1);
         let last_char_index = function_sender.builder.ins().isub(len, one);
         let last_char_ptr = function_sender.builder.ins().iadd(result, last_char_index);
-        let last_char = function_sender.builder
+        let last_char =
+            function_sender
+                .builder
+                .ins()
+                .load(types::I8, MemFlags::new(), last_char_ptr, 0);
+        let cmp = function_sender
+            .builder
             .ins()
-            .load(types::I8, MemFlags::new(), last_char_ptr, 0);
-        let cmp = function_sender.builder.ins().icmp_imm(IntCC::Equal, last_char, b'.' as i64);
+            .icmp_imm(IntCC::Equal, last_char, b'.' as i64);
 
         let merge_block = function_sender.builder.create_block();
 
@@ -2171,7 +1942,10 @@ fn write_float_as_string<M: Module>(
         function_sender.builder.switch_to_block(continue_block);
 
         let zero = function_sender.builder.ins().iconst(types::I8, 0);
-        function_sender.builder.ins().store(MemFlags::new(), zero, last_char_ptr, 0);
+        function_sender
+            .builder
+            .ins()
+            .store(MemFlags::new(), zero, last_char_ptr, 0);
         let len = function_sender.builder.ins().isub(len, one);
 
         function_sender.builder.ins().jump(merge_block, &[len]);
@@ -2191,10 +1965,15 @@ fn write_float_as_string<M: Module>(
         let callee = sender
             .module
             .declare_function("snprintf", Linkage::Import, &sig)?;
-        let local_callee = sender.module.declare_func_in_func(callee, function_sender.builder.func);
+        let local_callee = sender
+            .module
+            .declare_func_in_func(callee, function_sender.builder.func);
 
-        let format =
-            reference_constant_string_data(sender.string_constants.percent_g, sender, &mut function_sender.builder)?;
+        let format = reference_constant_string_data(
+            sender.string_constants.percent_g,
+            sender,
+            &mut function_sender.builder,
+        )?;
         let call = function_sender.builder.ins().call(
             local_callee,
             &[buffer_value, buffer_size, format, float_value],
@@ -2212,16 +1991,35 @@ fn bool_to_string<M: Module>(
 ) -> ReportResult<Value> {
     let else_block = function_sender.builder.create_block();
     let merge_block = function_sender.builder.create_block();
-    function_sender.builder.append_block_param(merge_block, sender.pointer_type);
+    function_sender
+        .builder
+        .append_block_param(merge_block, sender.pointer_type);
 
-    let then_return = reference_constant_string(sender.string_constants.yes, sender, &mut function_sender.builder)?;
-    function_sender.builder.ins().brz(bool_value, else_block, &[]);
-    function_sender.builder.ins().jump(merge_block, &[then_return]);
+    let then_return = reference_constant_string(
+        sender.string_constants.yes,
+        sender,
+        &mut function_sender.builder,
+    )?;
+    function_sender
+        .builder
+        .ins()
+        .brz(bool_value, else_block, &[]);
+    function_sender
+        .builder
+        .ins()
+        .jump(merge_block, &[then_return]);
 
     function_sender.builder.switch_to_block(else_block);
     function_sender.seal_block(else_block);
-    let else_return = reference_constant_string(sender.string_constants.no, sender, &mut function_sender.builder)?;
-    function_sender.builder.ins().jump(merge_block, &[else_return]);
+    let else_return = reference_constant_string(
+        sender.string_constants.no,
+        sender,
+        &mut function_sender.builder,
+    )?;
+    function_sender
+        .builder
+        .ins()
+        .jump(merge_block, &[else_return]);
 
     function_sender.builder.switch_to_block(merge_block);
     function_sender.seal_block(merge_block);
@@ -2236,9 +2034,11 @@ fn write_array_as_string<M: Module>(
     sender: &mut Sender<M>,
     function_sender: &mut FunctionSender,
 ) -> ReportResult<Value> {
-    let size = function_sender.builder
-        .ins()
-        .load(sender.pointer_type, MemFlags::new(), array_value, 0);
+    let size =
+        function_sender
+            .builder
+            .ins()
+            .load(sender.pointer_type, MemFlags::new(), array_value, 0);
 
     let one = function_sender.builder.ins().iconst(sender.pointer_type, 1);
     let last_index = function_sender.builder.ins().isub(size, one);
@@ -2246,38 +2046,66 @@ fn write_array_as_string<M: Module>(
     let array = array_data(array_value, sender, &mut function_sender.builder);
 
     let zero = function_sender.builder.ins().iconst(sender.pointer_type, 0);
-    let buff_size_slot = function_sender.builder.create_stack_slot(StackSlotData::new(
-        StackSlotKind::ExplicitSlot,
-        sender.pointer_type.bytes(),
-    ));
-    function_sender.builder.ins().stack_store(zero, buff_size_slot, 0);
-    let index_slot = function_sender.builder.create_stack_slot(StackSlotData::new(
-        StackSlotKind::ExplicitSlot,
-        sender.pointer_type.bytes(),
-    ));
-    let buff_offset_slot = function_sender.builder.create_stack_slot(StackSlotData::new(
-        StackSlotKind::ExplicitSlot,
-        sender.pointer_type.bytes(),
-    ));
-    function_sender.builder.ins().stack_store(zero, buff_offset_slot, 0);
+    let buff_size_slot = function_sender
+        .builder
+        .create_stack_slot(StackSlotData::new(
+            StackSlotKind::ExplicitSlot,
+            sender.pointer_type.bytes(),
+        ));
+    function_sender
+        .builder
+        .ins()
+        .stack_store(zero, buff_size_slot, 0);
+    let index_slot = function_sender
+        .builder
+        .create_stack_slot(StackSlotData::new(
+            StackSlotKind::ExplicitSlot,
+            sender.pointer_type.bytes(),
+        ));
+    let buff_offset_slot = function_sender
+        .builder
+        .create_stack_slot(StackSlotData::new(
+            StackSlotKind::ExplicitSlot,
+            sender.pointer_type.bytes(),
+        ));
+    function_sender
+        .builder
+        .ins()
+        .stack_store(zero, buff_offset_slot, 0);
 
-    function_sender.builder.ins().stack_store(zero, index_slot, 0);
+    function_sender
+        .builder
+        .ins()
+        .stack_store(zero, index_slot, 0);
 
     let header_block = function_sender.builder.create_block();
     let exit_block = function_sender.builder.create_block();
-    function_sender.builder.append_block_param(exit_block, sender.pointer_type);
+    function_sender
+        .builder
+        .append_block_param(exit_block, sender.pointer_type);
 
     function_sender.builder.ins().jump(header_block, &[]);
     function_sender.builder.switch_to_block(header_block);
 
-    let index = function_sender.builder.ins().stack_load(sender.pointer_type, index_slot, 0);
-
-    let buff_offset = function_sender.builder
+    let index = function_sender
+        .builder
         .ins()
-        .stack_load(sender.pointer_type, buff_offset_slot, 0);
+        .stack_load(sender.pointer_type, index_slot, 0);
 
-    let cmp = function_sender.builder.ins().icmp(IntCC::UnsignedLessThan, index, size);
-    function_sender.builder.ins().brz(cmp, exit_block, &[buff_offset]);
+    let buff_offset =
+        function_sender
+            .builder
+            .ins()
+            .stack_load(sender.pointer_type, buff_offset_slot, 0);
+
+    let cmp = function_sender
+        .builder
+        .ins()
+        .icmp(IntCC::UnsignedLessThan, index, size);
+    function_sender
+        .builder
+        .ins()
+        .brz(cmp, exit_block, &[buff_offset]);
 
     let continue_block = function_sender.builder.create_block();
     function_sender.builder.ins().jump(continue_block, &[]);
@@ -2295,15 +2123,25 @@ fn write_array_as_string<M: Module>(
         0,
     );
 
-    let new_buff_offset =
-        write_value_as_string(type_.into(), value, buff, buff_offset, sender, function_sender)?;
-    function_sender.builder
+    let new_buff_offset = write_value_as_string(
+        type_.into(),
+        value,
+        buff,
+        buff_offset,
+        sender,
+        function_sender,
+    )?;
+    function_sender
+        .builder
         .ins()
         .stack_store(new_buff_offset, buff_offset_slot, 0);
 
     let merge_block = function_sender.builder.create_block();
 
-    let cmp = function_sender.builder.ins().icmp(IntCC::NotEqual, index, last_index);
+    let cmp = function_sender
+        .builder
+        .ins()
+        .icmp(IntCC::NotEqual, index, last_index);
     function_sender.builder.ins().brz(cmp, merge_block, &[]);
 
     function_sender.seal_block(continue_block);
@@ -2311,9 +2149,20 @@ fn write_array_as_string<M: Module>(
     function_sender.builder.ins().jump(continue_block, &[]);
     function_sender.builder.switch_to_block(continue_block);
 
-    let sep = reference_constant_string(sender.string_constants._and_, sender, &mut function_sender.builder)?;
-    let new_buff_offset = write_chars(sep, buff, new_buff_offset, sender, &mut function_sender.builder);
-    function_sender.builder
+    let sep = reference_constant_string(
+        sender.string_constants._and_,
+        sender,
+        &mut function_sender.builder,
+    )?;
+    let new_buff_offset = write_chars(
+        sep,
+        buff,
+        new_buff_offset,
+        sender,
+        &mut function_sender.builder,
+    );
+    function_sender
+        .builder
         .ins()
         .stack_store(new_buff_offset, buff_offset_slot, 0);
 
@@ -2323,7 +2172,10 @@ fn write_array_as_string<M: Module>(
     function_sender.seal_block(merge_block);
 
     let new_index = function_sender.builder.ins().iadd_imm(index, 1);
-    function_sender.builder.ins().stack_store(new_index, index_slot, 0);
+    function_sender
+        .builder
+        .ins()
+        .stack_store(new_index, index_slot, 0);
 
     function_sender.builder.ins().jump(header_block, &[]);
 
@@ -2668,6 +2520,44 @@ impl<M: Module> Sender<M> {
     fn finalize(&mut self, context: &mut Context) {
         self.module.clear_context(context);
     }
+
+    fn call_external_fn(
+        &mut self,
+        builder: &mut FunctionBuilder<'_>,
+        name: &str,
+        args: &[types::Type],
+        values: &[Value],
+    ) -> ReportResult<()> {
+        let mut sig = self.module.make_signature();
+        for arg in args {
+            sig.params.push(AbiParam::new(*arg));
+        }
+        let callee = self.module.declare_function(name, Linkage::Import, &sig)?;
+        let local_callee = self.module.declare_func_in_func(callee, builder.func);
+        let _call = builder.ins().call(local_callee, values);
+
+        Ok(())
+    }
+
+    fn call_external_fn_for_result(
+        &mut self,
+        builder: &mut FunctionBuilder<'_>,
+        name: &str,
+        args: &[types::Type],
+        ret_type: types::Type,
+        values: &[Value],
+    ) -> ReportResult<Value> {
+        let mut sig = self.module.make_signature();
+        for arg in args {
+            sig.params.push(AbiParam::new(*arg));
+        }
+        sig.returns.push(AbiParam::new(ret_type));
+        let callee = self.module.declare_function(name, Linkage::Import, &sig)?;
+        let local_callee = self.module.declare_func_in_func(callee, builder.func);
+        let call = builder.ins().call(local_callee, values);
+
+        Ok(builder.inst_results(call)[0])
+    }
 }
 
 struct FunctionSender<'b> {
@@ -2735,7 +2625,10 @@ fn send_var<M: Module>(
 fn imax(ty: Type, left: Value, right: Value, function_sender: &mut FunctionSender) -> Value {
     let merge_block = function_sender.builder.create_block();
     function_sender.builder.append_block_param(merge_block, ty);
-    let cmp = function_sender.builder.ins().icmp(IntCC::UnsignedLessThan, left, right);
+    let cmp = function_sender
+        .builder
+        .ins()
+        .icmp(IntCC::UnsignedLessThan, left, right);
     function_sender.builder.ins().brz(cmp, merge_block, &[left]);
     function_sender.builder.ins().jump(merge_block, &[right]);
     function_sender.builder.switch_to_block(merge_block);

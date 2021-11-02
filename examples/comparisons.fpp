@@ -3,7 +3,7 @@ Dear Princess Celestia: I love to compare things.
 Today I learned about my friends:
 Did you know that Rainbow Dash is "cool"?
 I said Rainbow Dash is "cool"! (yes)
-Did you know that Fluttershy is "quite"?
+Did you know that Fluttershy is "quiet"?
 I said Fluttershy is not "loud". (yes)
 Did you know that (the number of) apples is 100?
 Did you know that Applejack has apples minus 10?

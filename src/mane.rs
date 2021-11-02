@@ -1,5 +1,5 @@
 use std::borrow::Borrow;
-use std::env::args;
+use std::env::{args, current_exe};
 use std::error::Error;
 use std::fs::read_to_string;
 use std::io;
@@ -148,6 +148,8 @@ fn main() -> Result<(), Box<dyn Error>> {
             };
             let path_name = sender::send_out(&ast, name, target)?;
 
+            let runtime_path = current_exe().unwrap().parent().unwrap().join("libsparkle.a");
+
             if should_link {
                 let output = if cfg!(target_os = "windows") {
                     let tool = cc::windows_registry::find_tool(target, "cl.exe").unwrap();
@@ -162,6 +164,12 @@ fn main() -> Result<(), Box<dyn Error>> {
                         .arg(path_name)
                         .arg("-o")
                         .arg(name)
+                        // .arg("-Ltarget/release")
+                        // .arg("-lruntime")
+                        .arg(runtime_path)
+                        .arg("-lpthread")
+                        .arg("-ldl")
+                        .arg("-lm")
                         .output()
                         .unwrap()
                 };
