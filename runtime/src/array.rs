@@ -1,15 +1,18 @@
-use std::alloc::{alloc, dealloc, Layout};
-use std::fmt::{Display, Formatter};
+use alloc::alloc::{alloc, dealloc};
+use alloc::boxed::Box;
+use core::alloc::Layout;
+use core::cmp::max;
+use core::fmt;
+use core::fmt::{Display, Formatter};
+use core::mem::forget;
+use core::{ptr, slice};
+use libc_print::std_name::println;
 
-use std::ptr::{null};
-
-
-
-type Result<T = ()> = std::result::Result<T, ()>;
+type Result<T = ()> = core::result::Result<T, ()>;
 
 #[repr(C)]
 pub struct Array<T> {
-    pub length: usize,
+    length: usize,
     contents: *mut T,
     capacity: usize,
 }
@@ -23,24 +26,60 @@ macro_rules! check_const {
 }
 
 impl<T> Array<T> {
+    pub fn const_from<const N: usize>(slice: [T; N]) -> Box<Array<T>> {
+        let length_layout = Layout::new::<usize>();
+        let contents_ptr_layout = Layout::new::<*mut T>();
+        let contents_layout = Layout::array::<T>(slice.len()).unwrap();
+
+        let layout = Layout::from_size_align(0, 1).unwrap();
+        let (layout, length_offset) = layout.extend(length_layout).unwrap();
+        let (layout, contents_ptr_offset) = layout.extend(contents_ptr_layout).unwrap();
+        let (layout, contents_offset) = layout.extend(contents_layout).unwrap();
+        let layout = layout.pad_to_align();
+
+        unsafe {
+            let array = alloc(layout);
+            ptr::write(array.add(length_offset).cast(), N);
+            ptr::write(
+                array.add(contents_ptr_offset).cast(),
+                array as usize + contents_offset,
+            );
+
+            let contents_ptr = array.add(contents_offset) as *mut T;
+            ptr::copy_nonoverlapping(slice.as_ptr(), contents_ptr, N);
+
+            // Don't drop slice as we own it now.
+            forget(slice);
+
+            Box::from_raw(array as *mut Array<T>)
+        }
+    }
+
+    pub fn dynamic() -> Box<Array<T>> {
+        let array = Array {
+            length: 0,
+            contents: ptr::null::<T>() as *mut T,
+            capacity: 0,
+        };
+        return Box::new(array);
+    }
+
+    pub fn len(&self) -> usize {
+        self.length
+    }
+
     pub fn as_slice(&self) -> &[T] {
-        &unsafe { std::slice::from_raw_parts(self.contents, self.length) }
+        &unsafe { slice::from_raw_parts(self.contents, self.length) }
+    }
+
+    pub fn get(&self, index: usize) -> Option<&T> {
+        let index = index - 1; // arrays are 1-indexed
+        self.as_slice().get(index)
     }
 
     pub fn push(&mut self, item: T) -> Result {
         check_const!(self);
-        if self.capacity <= self.length {
-            self.capacity = self.length + 1 * 2;
-            let new_slice_layout = Layout::array::<T>(self.capacity).unwrap().pad_to_align();
-            unsafe {
-                let slice_ptr = alloc(new_slice_layout) as *mut T;
-                if !self.contents.is_null() {
-                    std::ptr::copy_nonoverlapping(self.contents, slice_ptr, self.length);
-                }
-                self.drop_slice();
-                self.contents = slice_ptr;
-            }
-        }
+        self.ensure_capacity(self.length);
         unsafe {
             self.contents.add(self.length).write(item);
         }
@@ -54,15 +93,29 @@ impl<T> Array<T> {
         slice_ptr - ptr == 16
     }
 
+    fn ensure_capacity(&mut self, last_index: usize) {
+        if self.capacity <= last_index {
+            self.capacity = max((self.length + 1) * 2, last_index);
+            let new_slice_layout = Layout::array::<T>(self.capacity).unwrap();
+            unsafe {
+                let slice_ptr = alloc(new_slice_layout) as *mut T;
+                if !self.contents.is_null() {
+                    ptr::copy_nonoverlapping(self.contents, slice_ptr, self.length);
+                }
+                self.drop_slice();
+                self.contents = slice_ptr;
+            }
+        }
+    }
+
     unsafe fn drop_slice_contents(&mut self) {
-        let slice = std::slice::from_raw_parts_mut(self.contents, self.length);
+        let slice = slice::from_raw_parts_mut(self.contents, self.length);
         for item in slice {
-            std::ptr::drop_in_place(item as *mut T);
+            ptr::drop_in_place(item as *mut T);
         }
     }
 
     unsafe fn drop_slice(&mut self) {
-        self.drop_slice_contents();
         dealloc(
             self.contents as *mut u8,
             Layout::array::<T>(self.capacity).unwrap(),
@@ -70,70 +123,56 @@ impl<T> Array<T> {
     }
 }
 
+impl<T: Default> Array<T> {
+    pub fn set(&mut self, index: usize, item: T) -> Result {
+        check_const!(self);
+        let index = index - 1; // arrays are 1-indexed
+        self.ensure_capacity(index);
+        if index >= self.length {
+            for offset in index..self.length {
+                unsafe { self.contents.add(offset).write(T::default()) }
+            }
+            self.length = index + 1;
+        }
+        unsafe {
+            self.contents.add(index).write(item);
+        }
+        Ok(())
+    }
+}
+
 impl<T> Drop for Array<T> {
     fn drop(&mut self) {
         unsafe {
-            if self.is_const() {
-                self.drop_slice_contents();
-            } else {
+            self.drop_slice_contents();
+            if !(self.is_const()) {
                 self.drop_slice();
             }
         }
     }
 }
 
-impl<T: Clone> Array<T> {
-    pub fn const_from_slice(slice: &[T]) -> Box<Array<T>> {
-        let length_layout = Layout::new::<usize>();
-        let contents_ptr_layout = Layout::new::<*mut T>();
-        let contents_layout = Layout::array::<T>(slice.len()).unwrap();
-
-        let layout = Layout::from_size_align(0, 1).unwrap();
-        let (layout, length_offset) = layout.extend(length_layout).unwrap();
-        let (layout, contents_ptr_offset) = layout.extend(contents_ptr_layout).unwrap();
-        let (layout, contents_offset) = layout.extend(contents_layout).unwrap();
-        let layout = layout.pad_to_align();
-
-        unsafe {
-            let array = alloc(layout);
-            (array.add(length_offset) as *mut usize).write(slice.len());
-            (array.add(contents_ptr_offset) as *mut usize).write(array as usize + contents_offset);
-            let contents_ptr = array.add(contents_offset) as *mut T;
-            std::ptr::copy_nonoverlapping(slice.as_ptr(), contents_ptr, slice.len());
-            Box::from_raw(array as *mut Array<T>)
-        }
-    }
-
-    pub fn dynamic() -> Box<Array<T>> {
-        let array = Array {
-            length: 0,
-            contents: null::<T>() as *mut T,
-            capacity: 0,
-        };
-        return Box::new(array);
-    }
-}
-
 impl<T: Display> Display for Array<T> {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         for (i, item) in self.as_slice().iter().enumerate() {
             if i != 0 {
                 write!(f, " and ")?;
             }
             write!(f, "{}", item)?;
         }
-        write!(f, "\n")?;
         Ok(())
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use alloc::boxed::Box;
+
     use super::*;
 
     #[test]
     fn constructs_a_const_array() {
-        let array = Array::const_from_slice(&["one", "two", "three"]);
+        let array = Array::const_from(["one", "two", "three"]);
 
         assert!(array.is_const());
         assert_eq!(array.length, 3);
@@ -151,6 +190,19 @@ mod tests {
         array.push("one")?;
         array.push("two")?;
         array.push("three")?;
+
+        assert_eq!(array.length, 3);
+        assert_eq!(array.as_slice(), ["one", "two", "three"]);
+
+        Ok(())
+    }
+
+    #[test]
+    fn dynamic_array_grows_on_set() -> Result {
+        let mut array: Box<Array<&'static str>> = Array::dynamic();
+        array.set(1, "one")?;
+        array.set(2, "two")?;
+        array.set(3, "three")?;
 
         assert_eq!(array.length, 3);
         assert_eq!(array.as_slice(), ["one", "two", "three"]);

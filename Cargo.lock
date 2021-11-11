@@ -67,6 +67,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "baf1de4339761588bc0619e3cbc0120ee582ebb74b53b4efbf79117bd2da40fd"
 
 [[package]]
+name = "core2"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2cf12d2dad3ed124aa116f59561428478993d69ab81ae4d30e5349c9c5b5a5f6"
+dependencies = [
+ "memchr",
+]
+
+[[package]]
 name = "cranelift"
 version = "0.78.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -265,9 +274,18 @@ checksum = "e2abad23fbc42b3700f2f279844dc832adb2b2eb069b2df918f455c4e18cc646"
 
 [[package]]
 name = "libc"
-version = "0.2.106"
+version = "0.2.107"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a60553f9a9e039a333b4e9b20573b9e9b9c0bb3a11e201ccc48ef4283456d673"
+checksum = "fbe5e23404da5b4f555ef85ebed98fb4083e55a00c317800bc2a50ede9f3d219"
+
+[[package]]
+name = "libc-print"
+version = "0.1.17"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9ec0dfb72e36860b083690d6fa77bed63c99dcf0c897c893ec828ba4687380aa"
+dependencies = [
+ "libc",
+]
 
 [[package]]
 name = "log"
@@ -399,6 +417,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "panic-abort"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4e20e6499bbbc412f280b04a42346b356c6fa0753d5fd22b7bd752ff34c778ee"
+
+[[package]]
 name = "predicates"
 version = "2.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -514,6 +538,21 @@ dependencies = [
 [[package]]
 name = "runtime"
 version = "0.1.0"
+dependencies = [
+ "core2",
+ "libc",
+ "libc-print",
+ "slice-dst",
+]
+
+[[package]]
+name = "runtime-lib"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "panic-abort",
+ "runtime",
+]
 
 [[package]]
 name = "rustc-hash"
@@ -526,6 +565,15 @@ name = "rustc-serialize"
 version = "0.3.24"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dcf128d1287d2ea9d80910b5f1120d0b8eede3fbf1abe91c40d39ea7d51e6fda"
+
+[[package]]
+name = "slice-dst"
+version = "1.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ec1a6721a6d7c2997cea654e3eda6a827432c5dd0a0ed923ddd9b1d691203412"
+dependencies = [
+ "autocfg",
+]
 
 [[package]]
 name = "smallvec"

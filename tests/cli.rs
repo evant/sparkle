@@ -1,3 +1,4 @@
+use std::time::Duration;
 use assert_cmd::cargo::CargoError;
 use assert_cmd::Command;
 
@@ -161,6 +162,7 @@ fn number_gusser() -> TestResult {
     cmd.arg("gallop").arg("examples/number_guesser.fpp");
 
     cmd.write_stdin("\nhigher\nyes\n")
+        .timeout(Duration::from_secs(5))
         .assert()
         .success()
         .stdout(
@@ -206,7 +208,6 @@ fn echo() -> TestResult {
              Hi Rainbow Dash!\n\
              What is your favorite number?\n\
              Wow! My favorite number is also 10.2!\n"
-                .replace("\n", EOL),
         );
 
     Ok(())

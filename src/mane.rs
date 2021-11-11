@@ -164,12 +164,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                         .arg(path_name)
                         .arg("-o")
                         .arg(name)
-                        // .arg("-Ltarget/release")
-                        // .arg("-lruntime")
                         .arg(runtime_path)
-                        .arg("-lpthread")
-                        .arg("-ldl")
-                        .arg("-lm")
                         .output()
                         .unwrap()
                 };
