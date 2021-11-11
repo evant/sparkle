@@ -1,14 +1,9 @@
-use alloc::alloc::handle_alloc_error;
 use alloc::string::String;
-use alloc::vec::Vec;
-use core::arch::x86_64::{_bextr_u32, _bextr_u64};
 use core::ffi::c_void;
 use core::fmt;
 
-use core2::io::SeekFrom::Current;
-use core2::io::{BufRead, Cursor, Error, ErrorKind, Result, Seek, Write};
-use libc::{setbuf, ssize_t, useconds_t};
-use libc_print::std_name::println;
+use core2::io::{Cursor, Error, ErrorKind, Result};
+use libc::ssize_t;
 
 use crate::buff_read::BufReadExt;
 
@@ -47,9 +42,10 @@ pub fn stderr() -> LibCWriter {
 
 impl LibCWriter {
     pub fn flush(&mut self) {
-        unsafe {
-            libc::tcflush(self.0, libc::TCOFLUSH);
-        }
+        //TODO need this?
+        // unsafe {
+        //     libc::tcflush(self.0, libc::TCOFLUSH);
+        // }
     }
 }
 
@@ -95,9 +91,16 @@ impl fmt::Write for LibCWriter {
     }
 }
 
+#[cfg(not(windows))]
 #[inline]
-fn libc_read(handle: i32, buff: &mut [u8]) -> ssize_t {
-    unsafe { libc::read(handle, buff.as_mut_ptr() as *mut c_void, buff.len()) }
+fn libc_read(handle: i32, buff: &mut [u8]) -> i64 {
+    unsafe { libc::read(handle, buff.as_mut_ptr() as *mut c_void, buff.len()) as i64 }
+}
+
+#[cfg(windows)]
+#[inline]
+fn libc_read(handle: i32, buff: &mut [u8]) -> i64 {
+    unsafe { libc::read(handle, buff.as_mut_ptr() as *mut c_void, buff.len() as u32) as i64 }
 }
 
 #[cfg(not(windows))]
@@ -115,7 +118,7 @@ fn libc_println(handle: i32, msg: &str) -> fmt::Result {
 
 #[cfg(windows)]
 #[inline]
-fn libc_println(handle: i32, msg: &str) -> Result {
+fn libc_println(handle: i32, msg: &str) -> fmt::Result {
     unsafe {
         libc::write(handle, msg.as_ptr() as *const c_void, msg.len() as u32);
         Ok(())
