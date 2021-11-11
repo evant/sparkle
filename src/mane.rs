@@ -148,7 +148,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             };
             let path_name = sender::send_out(&ast, name, target)?;
 
-            let runtime_path = current_exe().unwrap().parent().unwrap().join("libsparkle.a");
+            let runtime_dir = current_exe().unwrap().parent().unwrap().to_owned();
 
             if should_link {
                 let output = if cfg!(target_os = "windows") {
@@ -157,6 +157,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                         .arg(path_name)
                         .arg("ucrt.lib")
                         .arg("msvcrt.lib")
+                        .arg(runtime_dir.join("sparkle.lib"))
                         .output()
                         .unwrap()
                 } else {
@@ -164,7 +165,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                         .arg(path_name)
                         .arg("-o")
                         .arg(name)
-                        .arg(runtime_path)
+                        .arg(runtime_dir.join("libsparkle.a"))
                         .output()
                         .unwrap()
                 };

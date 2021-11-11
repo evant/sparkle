@@ -79,6 +79,7 @@ pub extern "C" fn println_chars(str: ManuallyDrop<Chars>) {
 #[no_mangle]
 pub extern "C" fn print_chars(str: ManuallyDrop<Chars>) {
     print!("{}", *str);
+    stdout().flush();
 }
 
 #[no_mangle]
@@ -89,6 +90,7 @@ pub extern "C" fn println_bool(bool: bool) {
 #[no_mangle]
 pub extern "C" fn print_bool(bool: bool) {
     print!("{}", if bool { "yes" } else { "no" });
+    stdout().flush();
 }
 
 #[no_mangle]
@@ -99,6 +101,7 @@ pub extern "C" fn println_num(float: f64) {
 #[no_mangle]
 pub extern "C" fn print_num(float: f64) {
     print!("{}", float);
+    stdout().flush();
 }
 
 #[no_mangle]
@@ -154,7 +157,8 @@ fn print_array<T: Display>(array: Option<&Array<T>>) {
             }
         },
         None => {
-            print!("nothing")
+            print!("nothing");
+            stdout().flush();
         }
     }
 }

@@ -45,6 +45,14 @@ pub fn stderr() -> LibCWriter {
     LibCWriter(LIBC_STD_ERR)
 }
 
+impl LibCWriter {
+    pub fn flush(&mut self) {
+        unsafe {
+            libc::tcflush(self.0, libc::TCOFLUSH);
+        }
+    }
+}
+
 impl LibCReader {
     // unsafe to call from multiple threads due to the static buff impl.
     pub unsafe fn read_line(&mut self, out: &mut String) -> Result<()> {
