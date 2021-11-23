@@ -5,8 +5,20 @@ edition = "2018"
 
 [lib]
 name = "sparkle"
-crate-type = ["rlib", "cdylib", "staticlib"]
+crate-type = ["rlib"]
+doctest = false
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+slice-dst = { version = "1.5.1", default-features = false }
+libc = { version = "0.2.107", default-features = false }
+libc-print = "0.1.17"
+core2 = { version = "0.3.2", default-features = false }
+#memchr = { version = "2.4.1", default-features = false }
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"
