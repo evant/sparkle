@@ -1,12 +1,14 @@
 use alloc::alloc::{alloc, dealloc};
 use alloc::boxed::Box;
+use alloc::vec::Vec;
 use core::alloc::Layout;
 use core::cmp::max;
 use core::fmt;
 use core::fmt::{Display, Formatter};
 use core::mem::forget;
 use core::{ptr, slice};
-use libc_print::std_name::println;
+
+
 
 type Result<T = ()> = core::result::Result<T, ()>;
 
@@ -121,6 +123,12 @@ impl<T> Array<T> {
             Layout::array::<T>(self.capacity).unwrap(),
         );
     }
+
+    pub fn into_vec(self) -> Vec<T> {
+        let vec = unsafe { Vec::from_raw_parts(self.contents, self.length, self.capacity) };
+        forget(self);
+        return vec;
+    }
 }
 
 impl<T: Default> Array<T> {
@@ -161,6 +169,12 @@ impl<T: Display> Display for Array<T> {
             write!(f, "{}", item)?;
         }
         Ok(())
+    }
+}
+
+impl<T> From<Array<T>> for Vec<T> {
+    fn from(array: Array<T>) -> Self {
+        array.into_vec()
     }
 }
 

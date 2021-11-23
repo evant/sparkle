@@ -3,7 +3,7 @@ use core::ffi::c_void;
 use core::fmt;
 
 use core2::io::{Cursor, Error, ErrorKind, Result};
-use libc::ssize_t;
+
 
 use crate::buff_read::BufReadExt;
 
