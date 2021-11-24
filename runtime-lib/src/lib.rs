@@ -6,7 +6,6 @@ extern crate panic_abort;
 
 use core::alloc::Layout;
 use core::ffi::c_void;
-use core::mem::ManuallyDrop;
 
 pub use sparkle::{
     alloc_chars, array_bool_to_chars, array_chars_to_chars, array_get_bool, array_get_chars,

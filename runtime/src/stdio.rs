@@ -4,7 +4,6 @@ use core::fmt;
 
 use core2::io::{Cursor, Error, ErrorKind, Result};
 
-
 use crate::buff_read::BufReadExt;
 
 const LIBC_STD_IN: i32 = 0;

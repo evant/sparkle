@@ -1,6 +1,7 @@
-use std::fmt::{Display, Formatter};
+use std::fmt::{Debug, Display, Formatter};
 
-use logos::{Lexer, Logos, Skip};
+use enumset::EnumSetType;
+use logos::{Lexer, Logos};
 use num_derive::{FromPrimitive, ToPrimitive};
 
 pub struct Extras {
@@ -13,28 +14,45 @@ impl Default for Extras {
     }
 }
 
-#[derive(
-    Debug, Copy, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Logos, FromPrimitive, ToPrimitive,
-)]
+pub trait SparkleToken<'source>:
+    Logos<'source, Source = str, Extras = Extras> + EnumSetType + Copy + PartialEq + Display + Debug
+{
+}
+
+impl<
+        'source,
+        T: Logos<'source, Source = str, Extras = Extras>
+            + EnumSetType
+            + Copy
+            + PartialEq
+            + Display
+            + Debug,
+    > SparkleToken<'source> for T
+{
+}
+
+#[derive(Debug, Hash, PartialOrd, Ord, Logos, FromPrimitive, ToPrimitive, EnumSetType)]
 #[logos(extras = Extras)]
 pub enum Bit {
     #[error]
     Error,
+    #[regex("[^ \t\r\n!,.:?…‽\"()]+")]
+    Word,
     #[regex(r"[ \t\r\n]+", update_newline)]
     Whitespace,
     #[regex(r"P\.(S\.)[^\n]*\r?\n?", update_newline)]
     LineComment,
     #[token("(")]
-    StartComment,
-    #[regex("[^ \t\r\n!,.:?…‽\"]+")]
-    Word,
+    OpenParen,
+    #[token(")")]
+    CloseParen,
     #[token("always")]
     Always,
     #[regex("(is|are)[ \t\r\n]+now|now[ \t\r\n]+likes?|becomes?")]
     Assign,
     #[regex("is|was|ha(s|d)")]
     Is,
-    #[token("have")]
+    // #[token("have")]
     Have,
     #[regex("like(s|d)?")]
     Like,
@@ -46,8 +64,8 @@ pub enum Bit {
     Add,
     #[regex("minus|without")]
     Minus,
-    #[regex("the[ \t\r\n]+difference[ \t\r\n]+between")]
-    Difference,
+    #[regex("difference[ \t\r\n]+between")]
+    DifferenceBetween,
     #[token("subtract")]
     Subtract,
     #[token("from")]
@@ -64,10 +82,14 @@ pub enum Bit {
     Using,
     #[token("at")]
     At,
-    #[regex("the[ \t\r\n]+next")]
-    TheNext,
-    // #[regex("with|to[ \t\r\n]+get")]
+    #[regex("next")]
+    Next,
+    #[regex("(with|to[ \t\r\n]+get)")]
     With,
+    #[token("a")]
+    A,
+    #[token("the")]
+    The,
     #[regex("I[ \t\r\n]+(said|sang|wrote)")]
     ISaid,
     #[regex("I[ \t\r\n]+(heard|read|asked)")]
@@ -102,18 +124,18 @@ pub enum Bit {
     DidYouKnowThat,
     #[regex("Dear[ \t\r\n]+Princess[ \t\r\n]+Celestia:")]
     DearPrincessCelestia,
-    #[regex("Your[ \t\r\n]+faithful[ \t\r\n]+student:")]
+    #[regex("Your[ \t\r\n]+faithful[ \t\r\n]+student")]
     YourFaithfulStudent,
     #[regex("[!,.:?…‽]")]
     Punctuation,
-
-    Letter,
-    Topic,
-    Paragraph,
-    Var,
-    Comment,
-    Author,
-    Identifier,
+    #[token("number")]
+    Number,
+    #[regex("word|phrase|sentence|quote|name")]
+    Chars,
+    #[regex("logic|argument")]
+    Boolean,
+    #[regex("\"[^\"]*\"")]
+    Quoted,
 }
 
 fn update_newline<'source, Token>(lex: &mut Lexer<'source, Token>)
@@ -125,38 +147,16 @@ where
     }
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Logos)]
-#[logos(extras = Extras)]
-pub enum Comment {
-    #[error]
-    #[regex(r"[^()]+")]
-    Skip,
-    #[token("(")]
-    Start,
-    #[token(")")]
-    End,
-}
-
-#[derive(Debug, Copy, Clone, PartialEq, Logos)]
-#[logos(extras = Extras)]
-pub enum Signature {
-    #[error]
-    #[regex(r"[^!,.:?…‽]+")]
-    Author,
-    #[regex("[!,.:?…‽]")]
-    Punctuation,
-}
-
 impl Display for Bit {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "{}",
-            match self {
-                Bit::DearPrincessCelestia => "Dear Princess Celestia:",
-                _ => "mystery",
-            }
-        )
+        match self {
+            Bit::DearPrincessCelestia => write!(f, "'Dear Princess Celestia:'"),
+            Bit::YourFaithfulStudent => write!(f, "'Your faithful student'"),
+            Bit::Punctuation => write!(f, "one of !,.:?…‽"),
+            Bit::A => write!(f, "'a'"),
+            Bit::The => write!(f, "'the'"),
+            other => write!(f, "{:#?}", other),
+        }
     }
 }
 
@@ -202,38 +202,50 @@ mod test {
     fn multiline_comment() {
         {
             let mut lexer = Bit::lexer("()");
-            assert_eq!(lexer.next(), Some(Bit::StartComment));
-
-            let mut lexer: Lexer<Comment> = lexer.morph();
-            assert_lex_eq!(lexer, Comment::End);
+            assert_lex_eq!(lexer, Bit::OpenParen, Bit::CloseParen);
         }
         {
             let mut lexer = Bit::lexer("(ignore this)");
-            assert_eq!(lexer.next(), Some(Bit::StartComment));
 
-            let mut lexer: Lexer<Comment> = lexer.morph();
-            assert_lex_eq!(lexer, Comment::Skip, Comment::End);
+            assert_lex_eq!(
+                lexer,
+                Bit::OpenParen,
+                Bit::Word,
+                Bit::Whitespace,
+                Bit::Word,
+                Bit::CloseParen
+            );
         }
         {
             let mut lexer = Bit::lexer("(ignore\nthis\nas\nwell)");
-            assert_eq!(lexer.next(), Some(Bit::StartComment));
 
-            let mut lexer: Lexer<Comment> = lexer.morph();
-            assert_lex_eq!(lexer, Comment::Skip, Comment::End);
+            assert_lex_eq!(
+                lexer,
+                Bit::OpenParen,
+                Bit::Word,
+                Bit::Whitespace,
+                Bit::Word,
+                Bit::Whitespace,
+                Bit::Word,
+                Bit::Whitespace,
+                Bit::Word,
+                Bit::CloseParen
+            );
         }
         {
             let mut lexer = Bit::lexer("(ignore (nested) parens)");
-            assert_eq!(lexer.next(), Some(Bit::StartComment));
 
-            let mut lexer: Lexer<Comment> = lexer.morph();
             assert_lex_eq!(
                 lexer,
-                Comment::Skip,
-                Comment::Start,
-                Comment::Skip,
-                Comment::End,
-                Comment::Skip,
-                Comment::End
+                Bit::OpenParen,
+                Bit::Word,
+                Bit::Whitespace,
+                Bit::OpenParen,
+                Bit::Word,
+                Bit::CloseParen,
+                Bit::Whitespace,
+                Bit::Word,
+                Bit::CloseParen
             );
         }
     }
@@ -352,12 +364,5 @@ mod test {
         let mut lexer = Bit::lexer("I learned");
 
         assert_lex_eq!(lexer, Bit::ILearned);
-    }
-
-    #[test]
-    fn signature() {
-        let mut lexer = Signature::lexer(" Twilight Sparkle.");
-
-        assert_lex_eq!(lexer, Signature::Author, Signature::Punctuation);
     }
 }

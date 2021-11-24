@@ -24,6 +24,7 @@ rowan = "0.15.0"
 annotate-snippets = "0.9.1"
 num-traits = "0.2.14"
 num-derive = "0.3.3"
+enumset = "1.0.8"
 cc = "1.0.71"
 runtime = { path = "./runtime" }
 

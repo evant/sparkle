@@ -1,21 +1,16 @@
 use alloc::alloc::{alloc, dealloc};
 
-
 use core::alloc::Layout;
 use core::cmp::Ordering;
 use core::fmt;
 use core::fmt::{Debug, Display, Formatter};
 use core::marker::PhantomData;
-use core::mem::{size_of};
-
+use core::mem::size_of;
 
 use core::{ptr, slice};
 
-
-
 use crate::as_string_bytes::AsStringBytes;
 use crate::rc::{Rc, ReferenceCounted};
-
 
 #[repr(C)]
 pub struct Chars {
@@ -56,11 +51,7 @@ impl Chars {
     pub fn from_bytes(bytes: &[u8]) -> Rc<Chars> {
         unsafe {
             let chars = Chars::alloc(bytes.len());
-            ptr::copy_nonoverlapping(
-                bytes.as_ptr(),
-                (*chars).contents_ptr_mut(),
-                bytes.len(),
-            );
+            ptr::copy_nonoverlapping(bytes.as_ptr(), (*chars).contents_ptr_mut(), bytes.len());
             Rc::from_ptr(chars)
         }
     }

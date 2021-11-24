@@ -1,11 +1,12 @@
-use std::fmt::{Display, format, Formatter};
+use std::fmt::{Display, Formatter};
+use std::io::Write;
 
 use annotate_snippets::display_list::{DisplayList, FormatOptions};
 use annotate_snippets::snippet::{Annotation, AnnotationType, Slice, Snippet, SourceAnnotation};
+use enumset::EnumSet;
 use logos::Span;
-use std::io::Write;
 
-use crate::lexer::Bit;
+use crate::lexer::SparkleToken;
 use crate::reader2::Nomer;
 
 pub struct ReadError<'source> {
@@ -17,27 +18,64 @@ pub struct ReadError<'source> {
 }
 
 impl<'source> ReadError<'source> {
-    pub fn unexpected_bit(
-        origin: String,
-        nom: &Nomer<'source, Bit>,
-        expected: Bit,
-        actual: Option<Bit>,
-    ) -> ReadError<'source> {
+    pub fn unexpected_token<Token>(
+        nom: &Nomer<'source, Token>,
+        expected: EnumSet<Token>,
+        actual: Option<Token>,
+        label: String,
+    ) -> ReadError<'source>
+    where
+        Token: SparkleToken<'source>,
+    {
         let mut text = Vec::new();
-        write!(text, "Oh my Celestia! I was expecting '{}'", expected).unwrap();
+        write!(text, "Oh my Celestia! I was expecting ").unwrap();
+        if expected.len() == 1 {
+            write!(text, "{}", expected.iter().next().unwrap());
+        } else {
+            write!(text, "any of ").unwrap();
+            for (i, expected) in expected.iter().enumerate() {
+                if i != 0 {
+                    write!(text, ", ");
+                }
+               write!(text, "{}", expected);
+            }
+        }
+
         match actual {
             Some(_) => {
                 write!(text, " but I read '{}' instead!", nom.slice()).unwrap();
             }
             _ => {}
         }
-        let label = match expected {
-            Bit::DearPrincessCelestia => "Who is this?",
-            _ => "What is this?",
-        }.to_string();
 
         ReadError {
-            origin,
+            origin: nom.origin().to_owned(),
+            text: unsafe { String::from_utf8_unchecked(text) },
+            line_num: nom.line_num(),
+            source: nom.source(),
+            span: (label, nom.span()),
+        }
+    }
+
+    pub fn mismatched_identifier<Token>(
+        nom: &Nomer<'source, Token>,
+        first: &'source str,
+        second: &'source str,
+    ) -> ReadError<'source>
+    where
+        Token: SparkleToken<'source>,
+    {
+        let mut text = Vec::new();
+        write!(
+            text,
+            "Oh my Celestia! I was expecting '{}' to match '{}'!",
+            second, first
+        )
+        .unwrap();
+        let label = "Keep your work consistent".to_string();
+
+        ReadError {
+            origin: nom.origin().to_owned(),
             text: unsafe { String::from_utf8_unchecked(text) },
             line_num: nom.line_num(),
             source: nom.source(),

@@ -2,26 +2,27 @@ use std::ffi::{CStr, CString};
 use std::fs::File;
 use std::io::Write;
 use std::mem;
+use std::ops::Deref;
 use std::os::raw::c_char;
 use std::path::Path;
 use std::str::FromStr;
 
 use cranelift::codegen::binemit::{NullStackMapSink, NullTrapSink};
 use cranelift::codegen::Context;
-use cranelift::prelude::*;
-use cranelift::prelude::{AbiParam, FunctionBuilder, FunctionBuilderContext, isa};
 use cranelift::prelude::settings::{self, Configurable};
+use cranelift::prelude::*;
+use cranelift::prelude::{isa, AbiParam, FunctionBuilder, FunctionBuilderContext};
 use cranelift_jit::{JITBuilder, JITModule};
-use cranelift_module::{DataContext, DataId, default_libcall_names, FuncId, Linkage, Module};
+use cranelift_module::{default_libcall_names, DataContext, DataId, FuncId, Linkage, Module};
 use cranelift_object::{ObjectBuilder, ObjectModule};
 use nom::lib::std::collections::HashMap;
-use target_lexicon::{OperatingSystem, Triple};
 use sparkle::SYMBOLS;
+use target_lexicon::{OperatingSystem, Triple};
 
 use crate::error::ReportError;
 use crate::pst;
 use crate::pst::{
-    Arg, BinOperator, Call, Declaration, DeclareVar, Expr, Index, Literal, LValue, Paragraph,
+    Arg, BinOperator, Call, Declaration, DeclareVar, Expr, Index, LValue, Literal, Paragraph,
     Report, Statement,
 };
 use crate::types::ArrayType;
@@ -128,7 +129,7 @@ pub fn proofread<'a>(report: &'a Report<'a>, target: &str) -> ReportResult<()> {
     let mut globals = Callables::new();
 
     let mut buff = String::new();
-    send(&report, &mut sender, &mut globals, |sender, context| {
+    send(&report, &mut sender, &mut globals, |_sender, context| {
         cranelift::codegen::write_function(&mut buff, &context.func)?;
         Ok(())
     })?;
@@ -186,10 +187,10 @@ fn send<'a, M: Module>(
         match declaration {
             Declaration::Paragraph(paragraph) => {
                 let id = declare_paragraph(paragraph, sender)?;
-                let arg_types = paragraph.args.iter().map(|Arg(type_, _)| *type_).collect();
+                let arg_types = paragraph.decl.args.iter().map(|Arg(type_, _)| *type_).collect();
                 globals.insert(
-                    paragraph.name,
-                    Callable::Func(paragraph.return_type, arg_types, id),
+                    paragraph.decl.name,
+                    Callable::Func(paragraph.decl.return_type, arg_types, id),
                 );
                 declared_paragraphs.push((id, paragraph));
                 if paragraph.mane {
@@ -331,17 +332,17 @@ fn declare_paragraph<'a, M: Module>(
     sender: &mut Sender<M>,
 ) -> ReportResult<FuncId> {
     let mut sig = sender.module.make_signature();
-    for Arg(type_, _) in &paragraph.args {
+    for Arg(type_, _) in &paragraph.decl.args {
         sig.params
             .push(AbiParam::new(ir_type(sender.pointer_type, *type_)));
     }
-    if let Some(type_) = paragraph.return_type {
+    if let Some(type_) = paragraph.decl.return_type {
         sig.returns
             .push(AbiParam::new(ir_type(sender.pointer_type, type_)));
     }
     let id = sender
         .module
-        .declare_function(paragraph.name, Linkage::Local, &sig)?;
+        .declare_function(paragraph.decl.name, Linkage::Local, &sig)?;
 
     Ok(id)
 }
@@ -360,7 +361,7 @@ fn send_paragraph<'a, M: Module>(
 
     let entry_block = function_sender.builder.create_block();
 
-    for Arg(arg_type, name) in &paragraph.args {
+    for Arg(arg_type, name) in &paragraph.decl.args {
         let value_type = ir_type(sender.pointer_type, *arg_type);
         function_sender
             .builder
@@ -373,7 +374,7 @@ fn send_paragraph<'a, M: Module>(
             .append_block_param(entry_block, value_type);
         vars.insert(*name, Callable::Arg(*arg_type, arg_value));
     }
-    if let Some(return_type) = paragraph.return_type {
+    if let Some(return_type) = paragraph.decl.return_type {
         function_sender
             .builder
             .func
@@ -388,14 +389,14 @@ fn send_paragraph<'a, M: Module>(
     for statement in paragraph.statements.iter() {
         send_statement(
             statement,
-            paragraph.return_type,
+            paragraph.decl.return_type,
             sender,
             &mut vars,
             &mut function_sender,
         )?;
     }
 
-    if paragraph.return_type.is_none() {
+    if paragraph.decl.return_type.is_none() {
         function_sender.builder.ins().return_(&[]);
     }
     function_sender.builder.finalize();
@@ -776,7 +777,7 @@ fn send_write_lvalue_statement<'a, M: Module>(
                 &mut function_sender.builder,
                 fun,
                 &[sender.pointer_type, sender.pointer_type, ir_type],
-                &[array_value, index, value]
+                &[array_value, index, value],
             )?;
 
             Ok(())
@@ -1060,7 +1061,7 @@ fn send_index<M: Module>(
         fun,
         &[sender.pointer_type, sender.pointer_type],
         ir_type,
-        &[array_value, index]
+        &[array_value, index],
     )?;
 
     Ok((type_, result))

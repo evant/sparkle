@@ -2,12 +2,17 @@ use crate::types::Type;
 
 #[derive(Debug, PartialEq)]
 pub struct Paragraph<'a> {
-    pub name: &'a str,
-    pub closing_name: &'a str,
+    pub decl: ParagraphDeclaration<'a>,
     pub mane: bool,
+    pub closing_name: &'a str,
+    pub statements: Vec<Statement<'a>>,
+}
+
+#[derive(Debug, PartialEq)]
+pub struct ParagraphDeclaration<'a> {
+    pub name: &'a str,
     pub args: Vec<Arg<'a>>,
     pub return_type: Option<Type>,
-    pub statements: Vec<Statement<'a>>,
 }
 
 #[derive(Debug, PartialEq)]
