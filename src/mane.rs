@@ -9,8 +9,12 @@ use std::process::exit;
 
 mod error;
 mod pst;
+mod pst2;
+mod lexer;
 mod reader;
+mod reader2;
 mod sender;
+mod read_error;
 mod types;
 mod vars;
 

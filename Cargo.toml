@@ -19,6 +19,11 @@ cranelift-module = "0.78.0"
 cranelift-jit = "0.78.0"
 cranelift-object = "0.78.0"
 target-lexicon = "0.12.2"
+logos = "0.12.0"
+rowan = "0.15.0"
+annotate-snippets = "0.9.1"
+num-traits = "0.2.14"
+num-derive = "0.3.3"
 cc = "1.0.71"
 runtime = { path = "./runtime" }
 
@@ -26,6 +31,7 @@ runtime = { path = "./runtime" }
 assert_cmd = "2.0.2"
 predicates = "2.0.3"
 spectral = "0.6.0"
+expect-test = "1.1.0"
 
 [profile.release]
 lto = true
