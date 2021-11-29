@@ -1,5 +1,0 @@
-[34m0x7ffff7ddd32e[m:	"GLIBC_2.14"
-Continuing.
-
-Program received signal SIGSEGV, Segmentation fault.
-[34m0x00007ffff7f2677f[m in [33m__memmove_avx_unaligned_erms[m () from /usr/lib/libc.so.6

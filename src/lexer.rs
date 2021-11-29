@@ -51,6 +51,10 @@ pub enum Bit {
     Is,
     #[regex("isn't|wasn't|ha(s|d)n't")]
     Isnt,
+    #[regex("less[ \t\r\n]+than")]
+    LessThan,
+    #[regex("(more|greater)[ \t\r\n]+than")]
+    MoreThan,
     #[token("have")]
     Have,
     #[regex("like(s|d)?")]

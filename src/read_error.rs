@@ -7,7 +7,7 @@ use enumset::EnumSet;
 use logos::Span;
 
 use crate::lexer::SparkleToken;
-use crate::reader2::Nomer;
+use crate::nomer::Nomer;
 
 pub struct ReadError<'source> {
     pub origin: String,

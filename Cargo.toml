@@ -20,7 +20,7 @@ cranelift-jit = "0.78.0"
 cranelift-object = "0.78.0"
 target-lexicon = "0.12.2"
 logos = "0.12.0"
-annotate-snippets = "0.9.1"
+annotate-snippets = { version = "0.9.1", features = ["color"]}
 enumset = "1.0.8"
 cc = "1.0.71"
 runtime = { path = "./runtime" }

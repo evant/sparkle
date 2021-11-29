@@ -1,16 +1,17 @@
+use std::ops::BitOr;
+
 use enumset::{enum_set, EnumSet};
 use logos::{Lexer, Source};
 use logos::{Logos, Span};
-use nom::Slice;
 
 use crate::lexer::{Bit, SparkleToken};
+use crate::nomer::{Nomer, Result};
 use crate::pst::{
     Arg, BinOperator, Call, Declaration, Expr, Literal, Paragraph, ParagraphDeclaration, Report,
+    Statement,
 };
 use crate::read_error::ReadError;
 use crate::types::Type;
-
-type Result<'a, T> = std::result::Result<T, ReadError<'a>>;
 
 pub struct Reader<'source> {
     nom: Nomer<'source, Bit>,
@@ -23,91 +24,6 @@ struct ReportBuilder<'source> {
     name: Option<&'source str>,
     author: Option<&'source str>,
     declarations: Vec<Declaration<'source>>,
-}
-
-pub struct Nomer<'source, Token: Logos<'source>> {
-    origin: String,
-    inner: Lexer<'source, Token>,
-    /// Remember a peeked value, even if it was None.
-    peeked: Option<Option<Token>>,
-}
-
-impl<'source, Token> Nomer<'source, Token>
-where
-    Token: SparkleToken<'source>,
-{
-    fn new(origin: String, input: &'source str) -> Self {
-        Self {
-            origin,
-            inner: Token::lexer(input),
-            peeked: None,
-        }
-    }
-
-    pub fn origin(&self) -> &str {
-        &self.origin
-    }
-
-    pub fn source(&self) -> &'source str {
-        self.inner.source()
-    }
-
-    pub fn slice(&self) -> &'source str {
-        self.inner.slice()
-    }
-
-    pub fn span(&self) -> Span {
-        self.inner.span()
-    }
-
-    pub fn line_num(&self) -> usize {
-        self.inner.extras.line_num
-    }
-
-    fn peek(&mut self) -> Option<Token> {
-        let inner = &mut self.inner;
-        self.peeked
-            .get_or_insert_with(|| inner.next())
-            .as_ref()
-            .map(|v| *v)
-    }
-
-    fn expect(
-        &mut self,
-        expected: impl Into<EnumSet<Token>>,
-    ) -> Result<'source, (Token, &'source str)> {
-        self.expect_with_label(expected, "What is this?".to_string())
-    }
-
-    fn expect_with_label(
-        &mut self,
-        expected: impl Into<EnumSet<Token>>,
-        label: String,
-    ) -> Result<'source, (Token, &'source str)> {
-        let expected = expected.into();
-        let actual = self.peek();
-        if let Some(bit) = actual {
-            if expected.contains(bit) {
-                let slice = self.slice();
-                self.next();
-                return Ok((bit, slice));
-            }
-        }
-        Err(ReadError::unexpected_token(&self, expected, actual, label))
-    }
-}
-
-impl<'a, Token: Logos<'a>> Iterator for Nomer<'a, Token> {
-    type Item = (Token, &'a <<Token as Logos<'a>>::Source as Source>::Slice);
-
-    fn next(&mut self) -> Option<Self::Item> {
-        let bit = match self.peeked.take() {
-            Some(v) => v,
-            None => self.inner.next(),
-        }?;
-        let text = self.inner.slice();
-        Some((bit, text))
-    }
 }
 
 impl<'source> Reader<'source> {
@@ -130,15 +46,19 @@ impl<'source> Reader<'source> {
 
     fn read_letter(&mut self) -> Result<'source, Report<'source>> {
         let subject = self.read_heading()?;
+        self.eat_whitespace();
 
-        //TODO: read declarations
+        let mut declarations = vec![];
+        while let Ok(paragraph) = self.read_paragraph() {
+            declarations.push(Declaration::Paragraph(paragraph));
+        }
 
         let author = self.read_signature()?;
 
         Ok(Report {
             name: subject,
             writer: author,
-            declarations: Vec::new(),
+            declarations,
         })
     }
 
@@ -174,7 +94,11 @@ impl<'source> Reader<'source> {
         };
         let decl = self.paragraph_opening()?;
         self.eat_whitespace();
-        //TODO: statements
+        let mut statements = vec![];
+        while let Ok(statement) = self.statement() {
+            statements.push(statement);
+            self.eat_whitespace();
+        }
         let closing_topic = self.paragraph_closing()?;
 
         if decl.name != closing_topic {
@@ -188,7 +112,7 @@ impl<'source> Reader<'source> {
         Ok(Paragraph {
             mane,
             closing_name: decl.name,
-            statements: Vec::new(),
+            statements,
             decl,
         })
     }
@@ -267,6 +191,25 @@ impl<'source> Reader<'source> {
         Ok(topic)
     }
 
+    fn statement(&mut self) -> Result<'source, Statement<'source>> {
+        let statement = match self.nom.peek() {
+            Some(Bit::ISaid) => {
+                self.nom.next();
+                self.eat_whitespace();
+                let expr = self.expr()?;
+
+                Statement::Print(expr)
+            }
+            other => {
+                return Err(self.unexpected_token(other, enum_set!(Bit::ISaid)));
+            }
+        };
+        self.eat_whitespace();
+        self.nom.expect(Bit::Punctuation)?;
+
+        Ok(statement)
+    }
+
     fn expr_term(&mut self) -> Result<'source, Expr<'source>> {
         if let Ok(expr) = self.prefix_term() {
             return Ok(expr);
@@ -277,7 +220,7 @@ impl<'source> Reader<'source> {
         if let Ok(expr) = self.value_expr() {
             return Ok(expr);
         }
-        let actual = self.nom.next().map(|(bit, _)| bit);
+        let actual = self.nom.peek();
         Err(self.unexpected_token(
             actual,
             enum_set!(
@@ -302,9 +245,44 @@ impl<'source> Reader<'source> {
         ))
     }
 
+    fn expr(&mut self) -> Result<'source, Expr<'source>> {
+        fn is_chars_literal(expr: &Expr) -> bool {
+            match expr {
+                Expr::Lit(Literal::Chars(_)) => true,
+                _ => false,
+            }
+        }
+        let mut expr = self.expr_term()?;
+        let mut acc = vec![];
+        loop {
+            self.eat_whitespace();
+            // Alternate between expressions and char literals
+            let next_expr = if is_chars_literal(&expr) {
+                self.expr_term()
+            } else {
+                self.chars().map(|chars| Expr::Lit(chars))
+            };
+            acc.push(expr);
+            match next_expr {
+                Ok(next_expr) => {
+                    expr = next_expr;
+                    continue;
+                }
+                Err(_) => {
+                    // If we only have one expression return that, otherwise we need to concatenate them.
+                    return Ok(if acc.len() == 1 {
+                        acc.remove(0)
+                    } else {
+                        Expr::Concat(acc)
+                    });
+                }
+            }
+        }
+    }
+
     fn call(&mut self) -> Result<'source, Call<'source>> {
         let ident = self.read_identifier_until(enum_set!(
-            Bit::Punctuation | Bit::Using | Bit::And | Bit::Is | Bit::Isnt
+            Bit::Punctuation | Bit::Using | Bit::And | Bit::Is | Bit::Isnt | Bit::CharsLit
         ))?;
         let args = if let Some(Bit::Using) = self.nom.peek() {
             self.nom.next();
@@ -325,11 +303,10 @@ impl<'source> Reader<'source> {
     }
 
     fn literal(&mut self) -> Result<'source, Literal<'source>> {
+        if let Ok(chars) = self.chars() {
+            return Ok(chars);
+        }
         return match self.nom.peek() {
-            Some(Bit::CharsLit) => {
-                let (_, text) = self.nom.next().unwrap();
-                Ok(Literal::Chars(text.slice(1..text.len() - 1).unwrap()))
-            }
             Some(Bit::NumberLit) => {
                 let (_, text) = self.nom.next().unwrap();
                 Ok(Literal::Number(text.parse().unwrap()))
@@ -349,7 +326,40 @@ impl<'source> Reader<'source> {
         };
     }
 
+    fn chars(&mut self) -> Result<'source, Literal<'source>> {
+        return match self.nom.peek() {
+            Some(Bit::CharsLit) => {
+                let (_, text) = self.nom.next().unwrap();
+                Ok(Literal::Chars(text.slice(1..text.len() - 1).unwrap()))
+            }
+            other => Err(self.unexpected_token(other, enum_set!(Bit::CharsLit))),
+        };
+    }
+
     fn infix_op(&mut self) -> Result<'source, BinOperator> {
+        fn infix_cmp_op<'source>(nom: &mut Nomer<'source, Bit>) -> BinOperator {
+            match nom.peek() {
+                Some(Bit::LessThan) => {
+                    nom.next();
+                    BinOperator::LessThan
+                }
+                Some(Bit::MoreThan) => {
+                    nom.next();
+                    BinOperator::GreaterThan
+                }
+                _ => BinOperator::Equal,
+            }
+        }
+
+        fn invert_infix_cmp_op<'source>(nom: &mut Nomer<'source, Bit>) -> BinOperator {
+            match infix_cmp_op(nom) {
+                BinOperator::Equal => BinOperator::NotEqual,
+                BinOperator::LessThan => BinOperator::GreaterThanOrEqual,
+                BinOperator::GreaterThan => BinOperator::LessThanOrEqual,
+                _ => unreachable!(),
+            }
+        }
+
         return match self.nom.peek() {
             Some(Bit::Add | Bit::Plus) => {
                 self.nom.next();
@@ -376,14 +386,16 @@ impl<'source> Reader<'source> {
                 self.eat_whitespace();
                 if let Some(Bit::Not) = self.nom.peek() {
                     self.nom.next();
-                    Ok(BinOperator::NotEqual)
+                    self.eat_whitespace();
+                    Ok(invert_infix_cmp_op(&mut self.nom))
                 } else {
-                    Ok(BinOperator::Equal)
+                    Ok(infix_cmp_op(&mut self.nom))
                 }
             }
             Some(Bit::Isnt) => {
                 self.nom.next();
-                Ok(BinOperator::NotEqual)
+                self.eat_whitespace();
+                Ok(invert_infix_cmp_op(&mut self.nom))
             }
             other => Err(self.unexpected_token(
                 other,
@@ -411,7 +423,7 @@ impl<'source> Reader<'source> {
         if let Ok(call) = self.call() {
             return Ok(Expr::Call(call));
         }
-        let actual = self.nom.next().map(|(bit, _)| bit);
+        let actual = self.nom.peek();
         Err(self.unexpected_token(
             actual,
             enum_set!(Bit::Not | Bit::CharsLit | Bit::NumberLit | Bit::TrueLit | Bit::FalseLit),
@@ -706,12 +718,12 @@ mod test {
             |r| r.read_heading(),
             "Dear Princess Luna:",
             expect![[r#"
-error: Oh my Celestia! I was expecting 'Dear Princess Celestia:' but I read 'Dear Princess ' instead!
---> test.rs:0:1
- |
-0 | Dear Princess Luna:
- | ^^^^^^^^^^^^^^ Who is this?
- |"#]],
+                [1;38;5;9merror[0m: [1mOh my Celestia! I was expecting 'Dear Princess Celestia:' but I read 'Dear Princess ' instead![0m
+                [1;38;5;12m-->[0m test.rs:0:1
+                [1;38;5;12m |[0m
+                [1;38;5;12m0 |[0m Dear Princess Luna:
+                [1;38;5;12m |[0m[1;38;5;9m ^^^^^^^^^^^^^^[0m [1;38;5;9mWho is this?[0m
+                [1;38;5;12m |[0m"#]],
         );
     }
 
@@ -830,6 +842,23 @@ Report {
     declarations: [],
     writer: "Twilight Sparkle",
 }"#]],
+        );
+    }
+
+    #[test]
+    fn letter() {
+        pst_eq(
+            r#"Dear Princess Celestia: An example letter.
+
+        Today I learned how to fly:
+            I said "Fly!"!
+        That's all about how to fly!
+
+        Did you know that I had 100 (apples)?
+    Your faithful student: Twilight Sparkle.
+
+    P.S. This is ignored"#,
+            expect![[]],
         );
     }
 
@@ -1144,15 +1173,15 @@ Not(
             |r| r.prefix_not(),
             "not not true",
             expect![[r#"
-Not(
-    Not(
-        Lit(
-            Boolean(
-                true,
-            ),
-        ),
-    ),
-)"#]],
+            Not(
+                Not(
+                    Lit(
+                        Boolean(
+                            true,
+                        ),
+                    ),
+                ),
+            )"#]],
         );
     }
 
@@ -1197,6 +1226,265 @@ Not(
                         ),
                     ),
                 )"#]],
+        );
+        pst_fn_eq(
+            |r| r.infix_term(),
+            "the number of cupcakes is less than 10",
+            expect![[r#"
+                BinOp(
+                    LessThan,
+                    Call(
+                        Call(
+                            "the number of cupcakes",
+                            [],
+                        ),
+                    ),
+                    Lit(
+                        Number(
+                            10.0,
+                        ),
+                    ),
+                )"#]],
+        );
+        pst_fn_eq(
+            |r| r.infix_term(),
+            "the number of pies is not less than 10",
+            expect![[r#"
+                BinOp(
+                    GreaterThanOrEqual,
+                    Call(
+                        Call(
+                            "the number of pies",
+                            [],
+                        ),
+                    ),
+                    Lit(
+                        Number(
+                            10.0,
+                        ),
+                    ),
+                )"#]],
+        );
+        pst_fn_eq(
+            |r| r.infix_term(),
+            "the number of cakes is more than 10",
+            expect![[r#"
+                BinOp(
+                    GreaterThan,
+                    Call(
+                        Call(
+                            "the number of cakes",
+                            [],
+                        ),
+                    ),
+                    Lit(
+                        Number(
+                            10.0,
+                        ),
+                    ),
+                )"#]],
+        );
+        pst_fn_eq(
+            |r| r.infix_term(),
+            "the number of cute animals isn't greater than 100",
+            expect![[r#"
+                BinOp(
+                    LessThanOrEqual,
+                    Call(
+                        Call(
+                            "the number of cute animals",
+                            [],
+                        ),
+                    ),
+                    Lit(
+                        Number(
+                            100.0,
+                        ),
+                    ),
+                )"#]],
+        );
+        pst_fn_eq(
+            |r| r.infix_term(),
+            "Applejack has more than 50",
+            expect![[r#"
+                BinOp(
+                    GreaterThan,
+                    Call(
+                        Call(
+                            "Applejack",
+                            [],
+                        ),
+                    ),
+                    Lit(
+                        Number(
+                            50.0,
+                        ),
+                    ),
+                )"#]],
+        );
+    }
+
+    #[test]
+    fn concat() {
+        pst_fn_eq(
+            |r| r.expr(),
+            "Applejack\" jugs of cider on the wall\"",
+            expect![[r#"
+                Concat(
+                    [
+                        Call(
+                            Call(
+                                "Applejack",
+                                [],
+                            ),
+                        ),
+                        Lit(
+                            Chars(
+                                " jugs of cider on the wall",
+                            ),
+                        ),
+                    ],
+                )"#]],
+        );
+        pst_fn_eq(
+            |r| r.expr(),
+            "\"It needs to be about \" 20 \"% cooler\"",
+            expect![[r#"
+                Concat(
+                    [
+                        Lit(
+                            Chars(
+                                "It needs to be about ",
+                            ),
+                        ),
+                        Lit(
+                            Number(
+                                20.0,
+                            ),
+                        ),
+                        Lit(
+                            Chars(
+                                "% cooler",
+                            ),
+                        ),
+                    ],
+                )"#]],
+        );
+        pst_fn_eq(
+            |r| r.expr(),
+            "\"but \" my favorite numbers using 3 \" is pretty tasty!\"",
+            expect![[r#"
+                Concat(
+                    [
+                        Lit(
+                            Chars(
+                                "but ",
+                            ),
+                        ),
+                        Call(
+                            Call(
+                                "my favorite numbers",
+                                [
+                                    Lit(
+                                        Number(
+                                            3.0,
+                                        ),
+                                    ),
+                                ],
+                            ),
+                        ),
+                        Lit(
+                            Chars(
+                                " is pretty tasty!",
+                            ),
+                        ),
+                    ],
+                )"#]],
+        );
+    }
+
+    #[test]
+    fn print_statement() {
+        pst_fn_eq(
+            |r| r.statement(),
+            "I wrote 1 added to 2.",
+            expect![[r#"
+            Print(
+                BinOp(
+                    AddOrAnd,
+                    Lit(
+                        Number(
+                            1.0,
+                        ),
+                    ),
+                    Lit(
+                        Number(
+                            2.0,
+                        ),
+                    ),
+                ),
+            )"#]],
+        );
+        pst_fn_eq(
+            |r| r.statement(),
+            "I sang the elements of harmony count.",
+            expect![[r#"
+                Print(
+                    Call(
+                        Call(
+                            "elements of harmony count",
+                            [],
+                        ),
+                    ),
+                )"#]],
+        );
+        pst_fn_eq(
+            |r| r.statement(),
+            r#"I said "It needs to be about " 20 "% cooler"."#,
+            expect![[r#"
+                Print(
+                    Concat(
+                        [
+                            Lit(
+                                Chars(
+                                    "It needs to be about ",
+                                ),
+                            ),
+                            Lit(
+                                Number(
+                                    20.0,
+                                ),
+                            ),
+                            Lit(
+                                Chars(
+                                    "% cooler",
+                                ),
+                            ),
+                        ],
+                    ),
+                )"#]],
+        );
+        pst_fn_eq(
+            |r| r.statement(),
+            r#"I said Tantabus""!"#,
+            expect![[r#"
+            Print(
+                Concat(
+                    [
+                        Call(
+                            Call(
+                                "Tantabus",
+                                [],
+                            ),
+                        ),
+                        Lit(
+                            Chars(
+                                "",
+                            ),
+                        ),
+                    ],
+                ),
+            )"#]],
         );
     }
 }
