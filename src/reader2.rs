@@ -1,12 +1,12 @@
-
-
 use enumset::{enum_set, EnumSet};
 use logos::{Lexer, Source};
 use logos::{Logos, Span};
 use nom::Slice;
 
 use crate::lexer::{Bit, SparkleToken};
-use crate::pst::{Arg, BinOperator, Call, Declaration, Expr, Literal, Paragraph, ParagraphDeclaration, Report};
+use crate::pst::{
+    Arg, BinOperator, Call, Declaration, Expr, Literal, Paragraph, ParagraphDeclaration, Report,
+};
 use crate::read_error::ReadError;
 use crate::types::Type;
 
@@ -33,8 +33,8 @@ pub struct Nomer<'source, Token: Logos<'source>> {
 }
 
 impl<'source, Token> Nomer<'source, Token>
-    where
-        Token: SparkleToken<'source>,
+where
+    Token: SparkleToken<'source>,
 {
     fn new(origin: String, input: &'source str) -> Self {
         Self {
@@ -278,11 +278,34 @@ impl<'source> Reader<'source> {
             return Ok(expr);
         }
         let actual = self.nom.next().map(|(bit, _)| bit);
-        Err(self.unexpected_token(actual, enum_set!(Bit::Add | Bit::Subtract | Bit::Multiply | Bit::Divide | Bit::The | Bit::Add | Bit::Plus | Bit::Minus | Bit::Times | Bit::Over | Bit::Or | Bit::Is | Bit::Not | Bit::CharsLit | Bit::NumberLit | Bit::TrueLit | Bit::FalseLit)))
+        Err(self.unexpected_token(
+            actual,
+            enum_set!(
+                Bit::Add
+                    | Bit::Subtract
+                    | Bit::Multiply
+                    | Bit::Divide
+                    | Bit::The
+                    | Bit::Add
+                    | Bit::Plus
+                    | Bit::Minus
+                    | Bit::Times
+                    | Bit::Over
+                    | Bit::Or
+                    | Bit::Is
+                    | Bit::Not
+                    | Bit::CharsLit
+                    | Bit::NumberLit
+                    | Bit::TrueLit
+                    | Bit::FalseLit
+            ),
+        ))
     }
 
     fn call(&mut self) -> Result<'source, Call<'source>> {
-        let ident = self.read_identifier_until(enum_set!(Bit::Punctuation | Bit::Using | Bit::And | Bit::Is | Bit::Isnt))?;
+        let ident = self.read_identifier_until(enum_set!(
+            Bit::Punctuation | Bit::Using | Bit::And | Bit::Is | Bit::Isnt
+        ))?;
         let args = if let Some(Bit::Using) = self.nom.peek() {
             self.nom.next();
             self.eat_whitespace();
@@ -362,7 +385,19 @@ impl<'source> Reader<'source> {
                 self.nom.next();
                 Ok(BinOperator::NotEqual)
             }
-            other => Err(self.unexpected_token(other, enum_set!(Bit::Add | Bit::Plus | Bit::Minus | Bit::Times | Bit::Over | Bit::Or | Bit::Is | Bit::Isnt)))
+            other => Err(self.unexpected_token(
+                other,
+                enum_set!(
+                    Bit::Add
+                        | Bit::Plus
+                        | Bit::Minus
+                        | Bit::Times
+                        | Bit::Over
+                        | Bit::Or
+                        | Bit::Is
+                        | Bit::Isnt
+                ),
+            )),
         };
     }
 
@@ -374,10 +409,13 @@ impl<'source> Reader<'source> {
             return Ok(Expr::Lit(lit));
         }
         if let Ok(call) = self.call() {
-            return Ok(Expr::Call(call))
+            return Ok(Expr::Call(call));
         }
         let actual = self.nom.next().map(|(bit, _)| bit);
-        Err(self.unexpected_token(actual, enum_set!(Bit::Not | Bit::CharsLit | Bit::NumberLit | Bit::TrueLit | Bit::FalseLit)))
+        Err(self.unexpected_token(
+            actual,
+            enum_set!(Bit::Not | Bit::CharsLit | Bit::NumberLit | Bit::TrueLit | Bit::FalseLit),
+        ))
     }
 
     fn prefix_not(&mut self) -> Result<'source, Expr<'source>> {
@@ -405,37 +443,64 @@ impl<'source> Reader<'source> {
             Some(Bit::Add) => {
                 self.nom.next();
                 self.eat_whitespace();
-                let (left, right) = self.read_infix(|s| s.value_expr(), Bit::And, |s| s.value_expr())?;
+                let (left, right) =
+                    self.read_infix(|s| s.value_expr(), Bit::And, |s| s.value_expr())?;
 
-                Ok(Expr::BinOp(BinOperator::AddOrAnd, Box::new(left), Box::new(right)))
+                Ok(Expr::BinOp(
+                    BinOperator::AddOrAnd,
+                    Box::new(left),
+                    Box::new(right),
+                ))
             }
             Some(Bit::Subtract) => {
                 self.nom.next();
                 self.eat_whitespace();
-                let (left, right) = self.read_infix(|s| s.value_expr(), Bit::From, |s| s.value_expr())?;
+                let (left, right) =
+                    self.read_infix(|s| s.value_expr(), Bit::From, |s| s.value_expr())?;
 
-                Ok(Expr::BinOp(BinOperator::Sub, Box::new(left), Box::new(right)))
+                Ok(Expr::BinOp(
+                    BinOperator::Sub,
+                    Box::new(left),
+                    Box::new(right),
+                ))
             }
             Some(Bit::Multiply) => {
                 self.nom.next();
                 self.eat_whitespace();
-                let (left, right) = self.read_infix(|s| s.value_expr(), enum_set!(Bit::By | Bit::And), |s| s.value_expr())?;
+                let (left, right) = self.read_infix(
+                    |s| s.value_expr(),
+                    enum_set!(Bit::By | Bit::And),
+                    |s| s.value_expr(),
+                )?;
 
-                Ok(Expr::BinOp(BinOperator::Mul, Box::new(left), Box::new(right)))
+                Ok(Expr::BinOp(
+                    BinOperator::Mul,
+                    Box::new(left),
+                    Box::new(right),
+                ))
             }
             Some(Bit::Divide) => {
                 self.nom.next();
                 self.eat_whitespace();
-                let (left, right) = self.read_infix(|s| s.value_expr(), enum_set!(Bit::By | Bit::And), |s| s.value_expr())?;
+                let (left, right) = self.read_infix(
+                    |s| s.value_expr(),
+                    enum_set!(Bit::By | Bit::And),
+                    |s| s.value_expr(),
+                )?;
 
-                Ok(Expr::BinOp(BinOperator::Div, Box::new(left), Box::new(right)))
+                Ok(Expr::BinOp(
+                    BinOperator::Div,
+                    Box::new(left),
+                    Box::new(right),
+                ))
             }
             Some(Bit::The) => {
                 self.nom.next();
                 self.eat_whitespace();
                 let (bit, _) = self.nom.expect(Bit::DifferenceBetween | Bit::ProductOf)?;
                 self.eat_whitespace();
-                let (left, right) = self.read_infix(|s| s.value_expr(), Bit::And, |s| s.value_expr())?;
+                let (left, right) =
+                    self.read_infix(|s| s.value_expr(), Bit::And, |s| s.value_expr())?;
                 let op = match bit {
                     Bit::DifferenceBetween => BinOperator::Sub,
                     Bit::ProductOf => BinOperator::Mul,
@@ -447,19 +512,32 @@ impl<'source> Reader<'source> {
             Some(Bit::Either) => {
                 self.nom.next();
                 self.eat_whitespace();
-                let (left, right) = self.read_infix(|s| s.value_expr(), Bit::Or, |s| s.value_expr())?;
+                let (left, right) =
+                    self.read_infix(|s| s.value_expr(), Bit::Or, |s| s.value_expr())?;
 
-                Ok(Expr::BinOp(BinOperator::EitherOr, Box::new(left), Box::new(right)))
+                Ok(Expr::BinOp(
+                    BinOperator::EitherOr,
+                    Box::new(left),
+                    Box::new(right),
+                ))
             }
-            other => {
-                Err(self.unexpected_token(other, enum_set!(Bit::Add | Bit::Subtract | Bit::Multiply | Bit::Divide | Bit::The)))
-            }
+            other => Err(self.unexpected_token(
+                other,
+                enum_set!(Bit::Add | Bit::Subtract | Bit::Multiply | Bit::Divide | Bit::The),
+            )),
         }
     }
 
-    fn read_infix<F1, F2, R1, R2>(&mut self, read1: F1, infix: impl Into<EnumSet<Bit>>, read2: F2) -> Result<'source, (R1, R2)>
-        where F1: FnOnce(&mut Self) -> Result<'source, R1>,
-              F2: FnOnce(&mut Self) -> Result<'source, R2>, {
+    fn read_infix<F1, F2, R1, R2>(
+        &mut self,
+        read1: F1,
+        infix: impl Into<EnumSet<Bit>>,
+        read2: F2,
+    ) -> Result<'source, (R1, R2)>
+    where
+        F1: FnOnce(&mut Self) -> Result<'source, R1>,
+        F2: FnOnce(&mut Self) -> Result<'source, R2>,
+    {
         let left = read1(self)?;
         self.eat_whitespace();
         self.nom.expect(infix)?;
@@ -561,10 +639,10 @@ mod test {
     }
 
     fn pst_fn_eq<'source, F, Output, Error>(f: F, input: &'source str, expected: Expect)
-        where
-            F: FnOnce(&mut Reader<'source>) -> Result<Output, Error>,
-            Output: Debug,
-            Error: Display,
+    where
+        F: FnOnce(&mut Reader<'source>) -> Result<Output, Error>,
+        Output: Debug,
+        Error: Display,
     {
         let mut reader = Reader::new("test.rs".to_string(), input);
         let output = f(&mut reader);
@@ -580,10 +658,10 @@ mod test {
     }
 
     fn pst_fn_errors<'source, F, Output, Error>(f: F, input: &'source str, expected: Expect)
-        where
-            F: FnOnce(&mut Reader<'source>) -> Result<Output, Error>,
-            Output: Debug,
-            Error: Display,
+    where
+        F: FnOnce(&mut Reader<'source>) -> Result<Output, Error>,
+        Output: Debug,
+        Error: Display,
     {
         let mut reader = Reader::new("test.rs".to_string(), input);
         let output = f(&mut reader);
@@ -889,31 +967,11 @@ Boolean(
 
     #[test]
     fn infix_op() {
-        pst_fn_eq(
-            |r| r.infix_op(),
-            "added to",
-            expect![[r#"AddOrAnd"#]],
-        );
-        pst_fn_eq(
-            |r| r.infix_op(),
-            "minus",
-            expect![[r#"Sub"#]],
-        );
-        pst_fn_eq(
-            |r| r.infix_op(),
-            "multiplied with",
-            expect![[r#"Mul"#]],
-        );
-        pst_fn_eq(
-            |r| r.infix_op(),
-            "divided by",
-            expect![[r#"Div"#]],
-        );
-        pst_fn_eq(
-            |r| r.infix_op(),
-            "or",
-            expect![[r#"Or"#]],
-        );
+        pst_fn_eq(|r| r.infix_op(), "added to", expect![[r#"AddOrAnd"#]]);
+        pst_fn_eq(|r| r.infix_op(), "minus", expect![[r#"Sub"#]]);
+        pst_fn_eq(|r| r.infix_op(), "multiplied with", expect![[r#"Mul"#]]);
+        pst_fn_eq(|r| r.infix_op(), "divided by", expect![[r#"Div"#]]);
+        pst_fn_eq(|r| r.infix_op(), "or", expect![[r#"Or"#]]);
     }
 
     #[test]
@@ -1080,7 +1138,8 @@ Not(
             true,
         ),
     ),
-)"#]]);
+)"#]],
+        );
         pst_fn_eq(
             |r| r.prefix_not(),
             "not not true",
@@ -1093,7 +1152,8 @@ Not(
             ),
         ),
     ),
-)"#]]);
+)"#]],
+        );
     }
 
     #[test]

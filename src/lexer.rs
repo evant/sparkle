@@ -295,12 +295,7 @@ mod test {
         {
             let mut lexer = Bit::lexer("tabs\ttest");
 
-            assert_lex_eq!(
-                lexer,
-                Bit::Word,
-                Bit::Whitespace,
-                Bit::Word,
-            );
+            assert_lex_eq!(lexer, Bit::Word, Bit::Whitespace, Bit::Word,);
         }
         {
             let mut lexer = Bit::lexer("punctuation?");

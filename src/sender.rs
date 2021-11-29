@@ -187,7 +187,12 @@ fn send<'a, M: Module>(
         match declaration {
             Declaration::Paragraph(paragraph) => {
                 let id = declare_paragraph(paragraph, sender)?;
-                let arg_types = paragraph.decl.args.iter().map(|Arg(type_, _)| *type_).collect();
+                let arg_types = paragraph
+                    .decl
+                    .args
+                    .iter()
+                    .map(|Arg(type_, _)| *type_)
+                    .collect();
                 globals.insert(
                     paragraph.decl.name,
                     Callable::Func(paragraph.decl.return_type, arg_types, id),

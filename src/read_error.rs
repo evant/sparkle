@@ -37,7 +37,7 @@ impl<'source> ReadError<'source> {
                 if i != 0 {
                     write!(text, ", ");
                 }
-               write!(text, "{}", expected);
+                write!(text, "{}", expected);
             }
         }
 
