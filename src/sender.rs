@@ -2,7 +2,7 @@ use std::ffi::{CStr, CString};
 use std::fs::File;
 use std::io::Write;
 use std::mem;
-use std::ops::Deref;
+
 use std::os::raw::c_char;
 use std::path::Path;
 use std::str::FromStr;

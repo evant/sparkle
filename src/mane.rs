@@ -10,7 +10,6 @@ use std::process::exit;
 mod error;
 mod lexer;
 mod pst;
-mod pst2;
 mod read_error;
 mod reader;
 mod reader2;

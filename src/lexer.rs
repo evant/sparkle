@@ -2,7 +2,6 @@ use std::fmt::{Debug, Display, Formatter};
 
 use enumset::EnumSetType;
 use logos::{Lexer, Logos};
-use num_derive::{FromPrimitive, ToPrimitive};
 
 pub struct Extras {
     pub line_num: usize,
@@ -31,12 +30,12 @@ impl<
 {
 }
 
-#[derive(Debug, Hash, PartialOrd, Ord, Logos, FromPrimitive, ToPrimitive, EnumSetType)]
+#[derive(Debug, Hash, PartialOrd, Ord, Logos, EnumSetType)]
 #[logos(extras = Extras)]
 pub enum Bit {
     #[error]
     Error,
-    #[regex("[^ \t\r\n!,.:?…‽\"()]+")]
+    #[regex("[^ \t\r\n!,.:?…‽\"()]+", priority = 1)]
     Word,
     #[regex(r"[ \t\r\n]+", update_newline)]
     Whitespace,
@@ -48,14 +47,16 @@ pub enum Bit {
     CloseParen,
     #[token("always")]
     Always,
-    #[regex("(is|are)[ \t\r\n]+now|now[ \t\r\n]+likes?|becomes?")]
-    Assign,
     #[regex("is|was|ha(s|d)")]
     Is,
-    // #[token("have")]
+    #[regex("isn't|wasn't|ha(s|d)n't")]
+    Isnt,
+    #[token("have")]
     Have,
     #[regex("like(s|d)?")]
     Like,
+    #[token("not")]
+    Not,
     #[token("and")]
     And,
     #[regex("plus|added[ \t\r\n]+to")]
@@ -72,8 +73,20 @@ pub enum Bit {
     From,
     #[regex("times|multiplied[ \t\r\n]+with")]
     Times,
+    #[regex("multiply")]
+    Multiply,
+    #[token("by")]
+    By,
+    #[regex("product[ \t\r\n]+of")]
+    ProductOf,
     #[regex("over|divided[ \t\r\n]+by")]
     Over,
+    #[token("divide")]
+    Divide,
+    #[token("either")]
+    Either,
+    #[token("or")]
+    Or,
     #[regex("got[ \t\r\n]+one[ \t\r\n]+more[ \t\r\n]+")]
     OneMore,
     #[regex("got[ \t\r\n]+one[ \t\r\n]+less[ \t\r\n]+")]
@@ -135,7 +148,13 @@ pub enum Bit {
     #[regex("logic|argument")]
     Boolean,
     #[regex("\"[^\"]*\"")]
-    Quoted,
+    CharsLit,
+    #[regex(r"-?[0-9]+(\.[0-9]+)?", priority = 2)]
+    NumberLit,
+    #[regex("yes|true|right|correct")]
+    TrueLit,
+    #[regex("no|false|wrong|incorrect")]
+    FalseLit,
 }
 
 fn update_newline<'source, Token>(lex: &mut Lexer<'source, Token>)
@@ -155,6 +174,10 @@ impl Display for Bit {
             Bit::Punctuation => write!(f, "one of !,.:?…‽"),
             Bit::A => write!(f, "'a'"),
             Bit::The => write!(f, "'the'"),
+            Bit::CharsLit => write!(f, "chars"),
+            Bit::NumberLit => write!(f, "number"),
+            Bit::TrueLit => write!(f, "yes"),
+            Bit::FalseLit => write!(f, "no"),
             other => write!(f, "{:#?}", other),
         }
     }
@@ -172,7 +195,7 @@ mod test {
             assert_eq!($lexer.next(), Some($bit), "slice: {}", $lexer.slice());
             assert_lex_eq!($lexer);
         };
-        ($lexer:expr, $bit:expr, $($bits:expr),+) => {
+        ($lexer:expr, $bit:expr, $($bits:expr),* $(,)?) => {
             assert_eq!($lexer.next(), Some($bit), "slice: {}", $lexer.slice());
             assert_lex_eq!($lexer, $($bits),+);
         };
@@ -213,7 +236,7 @@ mod test {
                 Bit::Word,
                 Bit::Whitespace,
                 Bit::Word,
-                Bit::CloseParen
+                Bit::CloseParen,
             );
         }
         {
@@ -229,7 +252,7 @@ mod test {
                 Bit::Word,
                 Bit::Whitespace,
                 Bit::Word,
-                Bit::CloseParen
+                Bit::CloseParen,
             );
         }
         {
@@ -245,7 +268,7 @@ mod test {
                 Bit::CloseParen,
                 Bit::Whitespace,
                 Bit::Word,
-                Bit::CloseParen
+                Bit::CloseParen,
             );
         }
     }
@@ -253,7 +276,7 @@ mod test {
     #[test]
     fn words() {
         {
-            let mut lexer = Bit::lexer("word");
+            let mut lexer = Bit::lexer("test");
 
             assert_lex_eq!(lexer, Bit::Word);
         }
@@ -270,15 +293,13 @@ mod test {
             );
         }
         {
-            let mut lexer = Bit::lexer("words\twith\ttabs");
+            let mut lexer = Bit::lexer("tabs\ttest");
 
             assert_lex_eq!(
                 lexer,
                 Bit::Word,
                 Bit::Whitespace,
                 Bit::Word,
-                Bit::Whitespace,
-                Bit::Word
             );
         }
         {
@@ -309,22 +330,6 @@ mod test {
         let mut lexer = Bit::lexer("have");
 
         assert_lex_eq!(lexer, Bit::Have);
-    }
-
-    #[test]
-    fn assign() {
-        for bit in [
-            "is now",
-            "are now",
-            "now like",
-            "now likes",
-            "become",
-            "becomes",
-        ] {
-            let mut lexer = Bit::lexer(bit);
-
-            assert_lex_eq!(lexer, Bit::Assign);
-        }
     }
 
     #[test]
