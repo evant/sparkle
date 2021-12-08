@@ -11,7 +11,7 @@ use nom::IResult;
 use crate::error::ReportError;
 use crate::pst::{
     Arg, BinOperator, Call, Declaration, DeclareVar, Expr, Index, LValue, Literal, Paragraph,
-    Report, Statement, Variable,
+    ParagraphDeclaration, Report, Statement, Variable,
 };
 use crate::types::Type::{Array, Boolean, Chars, Number};
 use crate::types::{ArrayType, Type};
@@ -160,12 +160,10 @@ fn paragraph(s: &str) -> ReadResult<Paragraph> {
             many0(statement),
             paragraph_closing,
         )),
-        |(today, (name, return_type, args), statements, closing_name)| Paragraph {
-            name,
+        |(today, decl, statements, closing_name)| Paragraph {
+            decl,
             closing_name,
             mane: today.is_some(),
-            args,
-            return_type,
             statements,
         },
     )(s)
@@ -186,22 +184,29 @@ fn keyword_using(s: &str) -> ReadResult<&str> {
     tag("using")(s)
 }
 
-fn declare_paragraph(s: &str) -> ReadResult<(&str, Option<Type>, Vec<Arg>)> {
+fn declare_paragraph(s: &str) -> ReadResult<ParagraphDeclaration> {
     terminated(
-        tuple((
-            preceded(preceded(keyword_declare_paragraph, whitespace0), identifier),
-            opt(preceded(
-                whitespace_delim1(keyword_declare_paragraph_type),
-                declare_type,
-            )),
-            map(
+        map(
+            tuple((
+                preceded(preceded(keyword_declare_paragraph, whitespace0), identifier),
                 opt(preceded(
-                    whitespace_delim1(keyword_using),
-                    separated_nonempty_list(whitespace_delim1(tag("and")), paragraph_arg),
+                    whitespace_delim1(keyword_declare_paragraph_type),
+                    declare_type,
                 )),
-                |args| args.unwrap_or_else(|| vec![]),
-            ),
-        )),
+                map(
+                    opt(preceded(
+                        whitespace_delim1(keyword_using),
+                        separated_nonempty_list(whitespace_delim1(tag("and")), paragraph_arg),
+                    )),
+                    |args| args.unwrap_or_else(|| vec![]),
+                ),
+            )),
+            |(name, return_type, args)| ParagraphDeclaration {
+                name,
+                return_type,
+                args,
+            },
+        ),
         punctuation,
     )(s)
 }
@@ -1286,15 +1291,29 @@ fn parses_report_closing() {
 fn parses_declare_paragraph() {
     assert_eq!(
         declare_paragraph("I learned how to fly."),
-        Ok(("", ("how to fly", None, vec![])))
+        Ok((
+            "",
+            ParagraphDeclaration {
+                name: "how to fly",
+                return_type: None,
+                args: vec![]
+            }
+        ))
     );
     assert_eq!(
         declare_paragraph("I learned to say hello with a number:"),
-        Ok(("", ("to say hello", Some(Number), vec![])))
+        Ok((
+            "",
+            ParagraphDeclaration {
+                name: "to say hello",
+                return_type: Some(Number),
+                args: vec![]
+            }
+        ))
     );
     assert_eq!(
         declare_paragraph("I learned to make friends with a phrase using the number of elements of harmony and the word hello:"),
-        Ok(("", ("to make friends", Some(Chars), vec![Arg(Number, "of elements of harmony"), Arg(Chars, "hello")])))
+        Ok(("", ParagraphDeclaration { name: "to make friends", return_type: Some(Chars), args: vec![Arg(Number, "of elements of harmony"), Arg(Chars, "hello")]}))
     );
 }
 
@@ -1329,11 +1348,13 @@ fn parses_paragraph() {
         Ok((
             "",
             Paragraph {
-                name: "how to fly",
+                decl: ParagraphDeclaration {
+                    name: "how to fly",
+                    args: vec![],
+                    return_type: None,
+                },
                 closing_name: "how to fly",
                 mane: true,
-                args: vec![],
-                return_type: None,
                 statements: vec![Statement::Print(Expr::Lit(Literal::Chars("Fly!")))],
             }
         ))
@@ -1349,11 +1370,13 @@ fn parses_paragraph() {
         Ok((
             "",
             Paragraph {
-                name: "how to fly",
+                decl: ParagraphDeclaration {
+                    name: "how to fly",
+                    args: vec![],
+                    return_type: None,
+                },
                 closing_name: "how to fly",
                 mane: false,
-                args: vec![],
-                return_type: None,
                 statements: vec![
                     Statement::Print(Expr::Lit(Literal::Chars("Fly1!"))),
                     Statement::Print(Expr::BinOp(
@@ -1389,11 +1412,13 @@ fn parses_report() {
                 name: "An example letter",
                 declarations: vec![
                     Declaration::Paragraph(Paragraph {
-                        name: "how to fly",
+                        decl: ParagraphDeclaration {
+                            name: "how to fly",
+                            args: vec![],
+                            return_type: None,
+                        },
                         closing_name: "how to fly",
                         mane: true,
-                        args: vec![],
-                        return_type: None,
                         statements: vec![Statement::Print(Expr::Lit(Literal::Chars("Fly!")))],
                     }),
                     Declaration::Var(DeclareVar(

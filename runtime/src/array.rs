@@ -8,8 +8,6 @@ use core::fmt::{Display, Formatter};
 use core::mem::forget;
 use core::{ptr, slice};
 
-
-
 type Result<T = ()> = core::result::Result<T, ()>;
 
 #[repr(C)]

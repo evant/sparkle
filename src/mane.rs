@@ -8,8 +8,12 @@ use std::path::Path;
 use std::process::exit;
 
 mod error;
+mod lexer;
+mod nomer;
 mod pst;
+mod read_error;
 mod reader;
+mod reader2;
 mod sender;
 mod types;
 mod vars;

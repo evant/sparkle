@@ -2,11 +2,10 @@
 #![no_std]
 extern crate alloc;
 
-
 use alloc::string::{String, ToString};
 use core::fmt::{Display, Write};
 
-use core::ptr::{copy_nonoverlapping};
+use core::ptr::copy_nonoverlapping;
 
 use libc_print::std_name::{eprintln, print, println};
 
@@ -191,10 +190,7 @@ pub unsafe extern "C" fn array_get_bool(array: Ptr<Array<bool>>, index: usize) -
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn array_get_chars(
-    array: Ptr<Array<Rc<Chars>>>,
-    index: usize,
-) -> Rc<Chars> {
+pub unsafe extern "C" fn array_get_chars(array: Ptr<Array<Rc<Chars>>>, index: usize) -> Rc<Chars> {
     array_get(array.as_ref(), index).clone()
 }
 
@@ -317,7 +313,10 @@ mod tests {
             Chars::from_str("fruit"),
         ]);
 
-        assert_eq!(array_get(Some(&array), 1).as_ref().unwrap().as_str(), "chocolate")
+        assert_eq!(
+            array_get(Some(&array), 1).as_ref().unwrap().as_str(),
+            "chocolate"
+        )
     }
 
     #[test]
@@ -347,11 +346,7 @@ mod tests {
         unsafe {
             let bytes = b"test";
             let chars = alloc_chars(bytes.len());
-            copy_nonoverlapping(
-                bytes.as_ptr(),
-                (*chars).contents_ptr_mut(),
-                bytes.len(),
-            );
+            copy_nonoverlapping(bytes.as_ptr(), (*chars).contents_ptr_mut(), bytes.len());
             let chars = Rc::from_ptr(chars);
             let chars = chars.as_ref().unwrap();
 
