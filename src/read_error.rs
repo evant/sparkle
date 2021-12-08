@@ -9,6 +9,7 @@ use logos::Span;
 use crate::lexer::SparkleToken;
 use crate::nomer::Nomer;
 
+#[derive(Debug)]
 pub struct ReadError<'source> {
     pub origin: String,
     pub text: String,

@@ -1,4 +1,4 @@
-use std::fmt::{Debug, Display, Formatter};
+use std::fmt::{write, Debug, Display, Formatter};
 
 use enumset::EnumSetType;
 use logos::{Lexer, Logos};
@@ -107,10 +107,12 @@ pub enum Bit {
     A,
     #[token("the")]
     The,
-    #[regex("I[ \t\r\n]+(said|sang|wrote)")]
-    ISaid,
-    #[regex("I[ \t\r\n]+(heard|read|asked)")]
-    IHeard,
+    #[token("many")]
+    Many,
+    #[regex("said|sang|wrote")]
+    Said,
+    #[regex("heard|read|asked")]
+    Heard,
     #[regex("If|When")]
     If,
     #[regex("Otherwise|Or[ \t\r\n]+else")]
@@ -125,24 +127,45 @@ pub enum Bit {
     ThatsWhatIDid,
     #[regex("Here's[ \t\r\n]+what[ \t\r\n]+I[ \t\r\n]+did")]
     HeresWhatIDid,
-    #[regex("I[ \t\r\n]+did[ \t\r\n]+this[ \t\r\n]+(while|as[ \t\r\n]+long[ \t\r\n]+as)")]
-    IDidThisWhile,
+    This,
+    #[token("while")]
+    While,
+    #[token("as")]
+    As,
+    #[token("long")]
+    Long,
     #[regex("For[ \t\r\n]+every")]
     ForEvery,
     #[regex("Then[ \t\r\n]+you[ \t\r\n]+get")]
     ThenYouGet,
     #[regex("Today")]
     Today,
-    #[regex("I[ \t\r\n]+learned")]
-    ILearned,
+    #[token("I")]
+    I,
+    #[token("learned")]
+    Learned,
     #[regex("That's[ \t\r\n]+all[ \t\r\n]+about")]
     ThatsAllAbout,
-    #[regex("Did[ \t\r\n]+you[ \t\r\n]+know[ \t\r\n]+that")]
-    DidYouKnowThat,
-    #[regex("Dear[ \t\r\n]+Princess[ \t\r\n]+Celestia:")]
-    DearPrincessCelestia,
-    #[regex("Your[ \t\r\n]+faithful[ \t\r\n]+student")]
-    YourFaithfulStudent,
+    #[token("Did")]
+    Did,
+    #[token("you")]
+    You,
+    #[token("know")]
+    Know,
+    #[token("that")]
+    That,
+    #[token("Dear")]
+    Dear,
+    #[token("Princess")]
+    Princess,
+    #[token("Celestia:")]
+    Celestia,
+    #[token("Your")]
+    Your,
+    #[token("faithful")]
+    Faithful,
+    #[token("student")]
+    Student,
     #[regex("[!,.:?…‽]")]
     Punctuation,
     #[token("number")]
@@ -151,6 +174,12 @@ pub enum Bit {
     Chars,
     #[regex("logic|argument")]
     Boolean,
+    #[token("numbers")]
+    NumberArray,
+    #[regex("words|phrases|sentences|quotes|names")]
+    CharsArray,
+    #[token("arguments")]
+    BooleanArray,
     #[regex("\"[^\"]*\"")]
     CharsLit,
     #[regex(r"-?[0-9]+(\.[0-9]+)?", priority = 2)]
@@ -173,15 +202,30 @@ where
 impl Display for Bit {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
-            Bit::DearPrincessCelestia => write!(f, "'Dear Princess Celestia:'"),
-            Bit::YourFaithfulStudent => write!(f, "'Your faithful student'"),
+            Bit::Dear => write!(f, "'Dear'"),
+            Bit::Princess => write!(f, "'Princess'"),
+            Bit::Celestia => write!(f, "'Celestia:'"),
+            Bit::Your => write!(f, "'Your'"),
+            Bit::Faithful => write!(f, "'faithful'"),
+            Bit::Student => write!(f, "'student'"),
+            Bit::Did => write!(f, "'Did'"),
+            Bit::You => write!(f, "'you'"),
+            Bit::Know => write!(f, "'know'"),
+            Bit::That => write!(f, "'that'"),
+            Bit::I => write!(f, "'I'"),
+            Bit::Learned => write!(f, "'learned'"),
             Bit::Punctuation => write!(f, "one of !,.:?…‽"),
             Bit::A => write!(f, "'a'"),
             Bit::The => write!(f, "'the'"),
+            Bit::Many => write!(f, "'many'"),
             Bit::CharsLit => write!(f, "chars"),
             Bit::NumberLit => write!(f, "number"),
             Bit::TrueLit => write!(f, "yes"),
             Bit::FalseLit => write!(f, "no"),
+            Bit::Whitespace => write!(f, "' '"),
+            Bit::LineComment => write!(f, "'P.S.'"),
+            Bit::OpenParen => write!(f, "'('"),
+            Bit::CloseParen => write!(f, "')'"),
             other => write!(f, "{:#?}", other),
         }
     }
@@ -253,7 +297,7 @@ mod test {
                 Bit::Whitespace,
                 Bit::Word,
                 Bit::Whitespace,
-                Bit::Word,
+                Bit::As,
                 Bit::Whitespace,
                 Bit::Word,
                 Bit::CloseParen,
@@ -361,12 +405,5 @@ mod test {
         let mut lexer = Bit::lexer("add");
 
         assert_lex_eq!(lexer, Bit::Add);
-    }
-
-    #[test]
-    fn i_learned() {
-        let mut lexer = Bit::lexer("I learned");
-
-        assert_lex_eq!(lexer, Bit::ILearned);
     }
 }

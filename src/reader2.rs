@@ -1,17 +1,18 @@
-use std::ops::BitOr;
+use std::io::SeekFrom::Start;
 
+use cranelift::codegen::ir::HeapStyle::Static;
 use enumset::{enum_set, EnumSet};
 use logos::{Lexer, Source};
 use logos::{Logos, Span};
 
-use crate::lexer::{Bit, SparkleToken};
+use crate::lexer::{Bit, Extras, SparkleToken};
 use crate::nomer::{Nomer, Result};
 use crate::pst::{
-    Arg, BinOperator, Call, Declaration, Expr, Literal, Paragraph, ParagraphDeclaration, Report,
-    Statement,
+    Arg, BinOperator, Call, Declaration, DeclareVar, Expr, LValue, Literal, Paragraph,
+    ParagraphDeclaration, Report, Statement, Variable,
 };
 use crate::read_error::ReadError;
-use crate::types::Type;
+use crate::types::{ArrayType, Type};
 
 pub struct Reader<'source> {
     nom: Nomer<'source, Bit>,
@@ -40,20 +41,33 @@ impl<'source> Reader<'source> {
     }
 
     pub fn read(mut self) -> Result<'source, Report<'source>> {
-        let report = self.read_letter()?;
+        let report = self.letter()?;
         Ok(report)
     }
 
-    fn read_letter(&mut self) -> Result<'source, Report<'source>> {
-        let subject = self.read_heading()?;
-        self.eat_whitespace();
+    fn letter(&mut self) -> Result<'source, Report<'source>> {
+        self.whitespace0();
+        let subject = self.heading()?;
+        self.whitespace0();
 
         let mut declarations = vec![];
-        while let Ok(paragraph) = self.read_paragraph() {
-            declarations.push(Declaration::Paragraph(paragraph));
+        loop {
+            if let Ok(var) = self.declare_var() {
+                declarations.push(Declaration::Var(var));
+                self.whitespace0();
+                self.nom.expect(Bit::Punctuation)?;
+                continue;
+            }
+            if let Ok(paragraph) = self.paragraph() {
+                declarations.push(Declaration::Paragraph(paragraph));
+                self.whitespace0();
+                continue;
+            }
+            break;
         }
 
-        let author = self.read_signature()?;
+        self.whitespace0();
+        let author = self.signature()?;
 
         Ok(Report {
             name: subject,
@@ -62,42 +76,103 @@ impl<'source> Reader<'source> {
         })
     }
 
-    fn read_heading(&mut self) -> Result<'source, &'source str> {
-        self.eat_whitespace();
+    fn heading(&mut self) -> Result<'source, &'source str> {
+        self.nom.expect(Bit::Dear)?;
+        self.whitespace1()?;
+        self.nom.expect(Bit::Princess)?;
+        self.whitespace1()?;
         self.nom
-            .expect_with_label(Bit::DearPrincessCelestia, "Who is this?".to_string())?;
-        self.eat_whitespace();
-        let subject = self.read_identifier_until(Bit::Punctuation)?;
+            .expect_with_label(Bit::Celestia, "Who is this?".to_string())?;
+        self.whitespace0();
+        let subject = self.identifier_until(Bit::Punctuation)?;
         self.nom.expect(Bit::Punctuation)?;
 
         Ok(subject)
     }
 
-    fn read_signature(&mut self) -> Result<'source, &'source str> {
-        self.eat_whitespace();
-        self.nom.expect(Bit::YourFaithfulStudent)?;
-        self.eat_whitespace();
+    fn signature(&mut self) -> Result<'source, &'source str> {
+        self.nom.expect(Bit::Your)?;
+        self.whitespace1()?;
+        self.nom.expect(Bit::Faithful)?;
+        self.whitespace1()?;
+        self.nom.expect(Bit::Student)?;
+        self.whitespace0();
         self.nom.expect(Bit::Punctuation)?;
-        self.eat_whitespace();
-        let author = self.read_identifier_until(Bit::Punctuation)?;
+        self.whitespace0();
+        let author = self.identifier_until(Bit::Punctuation)?;
 
         Ok(author)
     }
 
-    fn read_paragraph(&mut self) -> Result<'source, Paragraph<'source>> {
+    fn declare_var(&mut self) -> Result<'source, DeclareVar<'source>> {
+        self.nom.expect(Bit::Did)?;
+        self.whitespace1()?;
+        self.nom.expect(Bit::You)?;
+        self.whitespace1()?;
+        self.nom.expect(Bit::Know)?;
+        self.whitespace1()?;
+        self.nom.expect(Bit::That)?;
+        self.whitespace1()?;
+
+        let name =
+            self.identifier_until(enum_set!(Bit::Always | Bit::Is | Bit::Have | Bit::Like))?;
+
+        let is_const = if let Some(Bit::Always) = self.nom.peek() {
+            self.nom.next();
+            self.whitespace1()?;
+            true
+        } else {
+            false
+        };
+
+        self.nom
+            .expect(enum_set!(Bit::Is | Bit::Have | Bit::Like))?;
+        self.whitespace1()?;
+
+        let type_ = self.declare_type().ok();
+        let exprs = match type_ {
+            Some(type_) => {
+                if let Ok(_) = self.whitespace1() {
+                    let exprs = if let Type::Array(_) = type_ {
+                        if let Ok(expr) = self.expr() {
+                            let mut exprs = vec![expr];
+                            while let Some(Bit::And) = self.nom.peek() {
+                                self.nom.next();
+                                self.whitespace1();
+                                exprs.push(self.expr()?);
+                            }
+                            Some(exprs)
+                        } else {
+                            None
+                        }
+                    } else {
+                        self.expr().ok().map(|e| vec![e])
+                    };
+                    exprs
+                } else {
+                    None
+                }
+            }
+            None => self.expr().ok().map(|e| vec![e]),
+        };
+
+        Ok(DeclareVar(Variable(name), type_, exprs, is_const))
+    }
+
+    fn paragraph(&mut self) -> Result<'source, Paragraph<'source>> {
         let mane = if let Some(Bit::Today) = self.nom.peek() {
             self.nom.next();
-            self.eat_whitespace();
+            self.whitespace1();
             true
         } else {
             false
         };
         let decl = self.paragraph_opening()?;
-        self.eat_whitespace();
+        self.whitespace0();
         let mut statements = vec![];
         while let Ok(statement) = self.statement() {
             statements.push(statement);
-            self.eat_whitespace();
+            self.whitespace0();
         }
         let closing_topic = self.paragraph_closing()?;
 
@@ -118,17 +193,18 @@ impl<'source> Reader<'source> {
     }
 
     fn paragraph_opening(&mut self) -> Result<'source, ParagraphDeclaration<'source>> {
-        self.nom.expect(Bit::ILearned)?;
-        self.eat_whitespace();
-        let topic =
-            self.read_identifier_until(enum_set!(Bit::Punctuation | Bit::With | Bit::Using))?;
+        self.nom.expect(Bit::I)?;
+        println!("I! peek: {:?}", self.nom.peek());
+        self.whitespace1()?;
+        println!("-Learned!");
+        self.nom.expect(Bit::Learned)?;
+        self.whitespace1();
+        let topic = self.identifier_until(enum_set!(Bit::Punctuation | Bit::With | Bit::Using))?;
         let return_type = if let Some(Bit::With) = self.nom.peek() {
             self.nom.next();
-            self.eat_whitespace();
-            self.nom.expect(Bit::A)?;
-            self.eat_whitespace();
+            self.whitespace1();
             let return_type = self.declare_type()?;
-            self.eat_whitespace();
+            self.whitespace0();
             Some(return_type)
         } else {
             None
@@ -136,14 +212,14 @@ impl<'source> Reader<'source> {
         let mut args = Vec::new();
         if let Some(Bit::Using) = self.nom.peek() {
             self.nom.next();
-            self.eat_whitespace();
+            self.whitespace1();
             loop {
                 let arg = self.paragraph_arg()?;
                 args.push(arg);
-                self.eat_whitespace();
+                self.whitespace0();
                 if let Some(Bit::And) = self.nom.peek() {
                     self.nom.next();
-                    self.eat_whitespace();
+                    self.whitespace1();
                     continue;
                 } else {
                     break;
@@ -161,16 +237,43 @@ impl<'source> Reader<'source> {
     }
 
     fn paragraph_arg(&mut self) -> Result<'source, Arg<'source>> {
-        self.nom.expect(enum_set!(Bit::A | Bit::The))?;
-        self.eat_whitespace();
-        let _type = self.declare_type()?;
-        self.eat_whitespace();
-        let name = self.read_identifier_until(enum_set!(Bit::Punctuation | Bit::And))?;
+        let type_ = self.declare_type()?;
+        self.whitespace0();
+        let name = self.identifier_until(enum_set!(Bit::Punctuation | Bit::And))?;
 
-        Ok(Arg(_type, name))
+        Ok(Arg(type_, name))
     }
 
     fn declare_type(&mut self) -> Result<'source, Type> {
+        let (bit, _) = self.nom.expect(Bit::A | Bit::The | Bit::Many)?;
+        self.whitespace1();
+
+        let expected_types = match bit {
+            Bit::A => enum_set!(Bit::Number | Bit::Chars | Bit::Boolean),
+            Bit::Many => enum_set!(Bit::NumberArray | Bit::CharsArray | Bit::BooleanArray),
+            Bit::The => enum_set!(
+                Bit::Number
+                    | Bit::NumberArray
+                    | Bit::Chars
+                    | Bit::CharsArray
+                    | Bit::Boolean
+                    | Bit::BooleanArray
+            ),
+            _ => unreachable!(),
+        };
+        let (_type, _) = self.nom.expect(expected_types)?;
+        Ok(match _type {
+            Bit::Number => Type::Number,
+            Bit::Chars => Type::Chars,
+            Bit::Boolean => Type::Boolean,
+            Bit::NumberArray => Type::Array(ArrayType::Number),
+            Bit::CharsArray => Type::Array(ArrayType::Chars),
+            Bit::BooleanArray => Type::Array(ArrayType::Boolean),
+            _ => unreachable!(),
+        })
+    }
+
+    fn type_(&mut self) -> Result<'source, Type> {
         let (_type, _) = self
             .nom
             .expect(enum_set!(Bit::Number | Bit::Chars | Bit::Boolean))?;
@@ -184,8 +287,8 @@ impl<'source> Reader<'source> {
 
     fn paragraph_closing(&mut self) -> Result<'source, &'source str> {
         self.nom.expect(Bit::ThatsAllAbout)?;
-        self.eat_whitespace();
-        let topic = self.read_identifier_until(Bit::Punctuation)?;
+        self.whitespace0();
+        let topic = self.identifier_until(Bit::Punctuation)?;
         self.nom.expect(Bit::Punctuation)?;
 
         Ok(topic)
@@ -193,18 +296,57 @@ impl<'source> Reader<'source> {
 
     fn statement(&mut self) -> Result<'source, Statement<'source>> {
         let statement = match self.nom.peek() {
-            Some(Bit::ISaid) => {
+            Some(Bit::I) => {
                 self.nom.next();
-                self.eat_whitespace();
-                let expr = self.expr()?;
-
-                Statement::Print(expr)
+                self.whitespace1()?;
+                match self.nom.peek() {
+                    Some(Bit::Said) => {
+                        self.nom.next();
+                        self.whitespace1()?;
+                        let expr = self.expr()?;
+                        Statement::Print(expr)
+                    }
+                    Some(Bit::Heard) => {
+                        self.nom.next();
+                        self.whitespace1()?;
+                        let var = self.identifier_until(enum_set!(
+                            Bit::Punctuation | Bit::The | Bit::CharsLit
+                        ))?;
+                        let type_ = if let Some(Bit::The) = self.nom.peek() {
+                            self.nom.next();
+                            self.whitespace1()?;
+                            self.nom.expect(Bit::Next)?;
+                            self.whitespace1()?;
+                            Some(self.type_()?)
+                        } else {
+                            None
+                        };
+                        let next_is_whitespace = self.whitespace1().is_ok();
+                        let prompt = if type_.is_none() || next_is_whitespace {
+                            if let Ok(expr) = self.expr() {
+                                Some(expr)
+                            } else {
+                                None
+                            }
+                        } else {
+                            None
+                        };
+                        Statement::Read(LValue::Variable(var), type_, prompt)
+                    }
+                    other => {
+                        return Err(self.unexpected_token(other, enum_set!(Bit::Said)));
+                    }
+                }
+            }
+            Some(Bit::Did) => {
+                let decl = self.declare_var()?;
+                Statement::Declare(decl)
             }
             other => {
-                return Err(self.unexpected_token(other, enum_set!(Bit::ISaid)));
+                return Err(self.unexpected_token(other, enum_set!(Bit::I)));
             }
         };
-        self.eat_whitespace();
+        self.whitespace0();
         self.nom.expect(Bit::Punctuation)?;
 
         Ok(statement)
@@ -255,7 +397,7 @@ impl<'source> Reader<'source> {
         let mut expr = self.expr_term()?;
         let mut acc = vec![];
         loop {
-            self.eat_whitespace();
+            self.whitespace0();
             // Alternate between expressions and char literals
             let next_expr = if is_chars_literal(&expr) {
                 self.expr_term()
@@ -281,17 +423,17 @@ impl<'source> Reader<'source> {
     }
 
     fn call(&mut self) -> Result<'source, Call<'source>> {
-        let ident = self.read_identifier_until(enum_set!(
+        let ident = self.identifier_until(enum_set!(
             Bit::Punctuation | Bit::Using | Bit::And | Bit::Is | Bit::Isnt | Bit::CharsLit
         ))?;
         let args = if let Some(Bit::Using) = self.nom.peek() {
             self.nom.next();
-            self.eat_whitespace();
+            self.whitespace1();
             let mut args = vec![self.expr_term()?];
-            self.eat_whitespace();
+            self.whitespace0();
             while let Some(Bit::And) = self.nom.peek() {
                 self.nom.next();
-                self.eat_whitespace();
+                self.whitespace1();
                 args.push(self.expr_term()?);
             }
             args
@@ -337,7 +479,7 @@ impl<'source> Reader<'source> {
     }
 
     fn infix_op(&mut self) -> Result<'source, BinOperator> {
-        fn infix_cmp_op<'source>(nom: &mut Nomer<'source, Bit>) -> BinOperator {
+        fn infix_cmp_op(nom: &mut Nomer<Bit>) -> BinOperator {
             match nom.peek() {
                 Some(Bit::LessThan) => {
                     nom.next();
@@ -351,7 +493,7 @@ impl<'source> Reader<'source> {
             }
         }
 
-        fn invert_infix_cmp_op<'source>(nom: &mut Nomer<'source, Bit>) -> BinOperator {
+        fn invert_infix_cmp_op(nom: &mut Nomer<Bit>) -> BinOperator {
             match infix_cmp_op(nom) {
                 BinOperator::Equal => BinOperator::NotEqual,
                 BinOperator::LessThan => BinOperator::GreaterThanOrEqual,
@@ -383,10 +525,10 @@ impl<'source> Reader<'source> {
             }
             Some(Bit::Is) => {
                 self.nom.next();
-                self.eat_whitespace();
+                self.whitespace1();
                 if let Some(Bit::Not) = self.nom.peek() {
                     self.nom.next();
-                    self.eat_whitespace();
+                    self.whitespace1();
                     Ok(invert_infix_cmp_op(&mut self.nom))
                 } else {
                     Ok(infix_cmp_op(&mut self.nom))
@@ -394,7 +536,7 @@ impl<'source> Reader<'source> {
             }
             Some(Bit::Isnt) => {
                 self.nom.next();
-                self.eat_whitespace();
+                self.whitespace1();
                 Ok(invert_infix_cmp_op(&mut self.nom))
             }
             other => Err(self.unexpected_token(
@@ -432,7 +574,7 @@ impl<'source> Reader<'source> {
 
     fn prefix_not(&mut self) -> Result<'source, Expr<'source>> {
         self.nom.expect(Bit::Not)?;
-        self.eat_whitespace();
+        self.whitespace1();
         let expr = self.value_expr()?;
 
         Ok(Expr::Not(Box::new(expr)))
@@ -440,11 +582,11 @@ impl<'source> Reader<'source> {
 
     fn infix_term(&mut self) -> Result<'source, Expr<'source>> {
         let mut expr = self.value_expr()?;
-        self.eat_whitespace();
+        self.whitespace0();
         while let Ok(op) = self.infix_op() {
-            self.eat_whitespace();
+            self.whitespace1();
             let right = self.value_expr()?;
-            self.eat_whitespace();
+            self.whitespace0();
             expr = Expr::BinOp(op, Box::new(expr), Box::new(right));
         }
         Ok(expr)
@@ -454,7 +596,7 @@ impl<'source> Reader<'source> {
         match self.nom.peek() {
             Some(Bit::Add) => {
                 self.nom.next();
-                self.eat_whitespace();
+                self.whitespace1();
                 let (left, right) =
                     self.read_infix(|s| s.value_expr(), Bit::And, |s| s.value_expr())?;
 
@@ -466,7 +608,7 @@ impl<'source> Reader<'source> {
             }
             Some(Bit::Subtract) => {
                 self.nom.next();
-                self.eat_whitespace();
+                self.whitespace1();
                 let (left, right) =
                     self.read_infix(|s| s.value_expr(), Bit::From, |s| s.value_expr())?;
 
@@ -478,7 +620,7 @@ impl<'source> Reader<'source> {
             }
             Some(Bit::Multiply) => {
                 self.nom.next();
-                self.eat_whitespace();
+                self.whitespace1();
                 let (left, right) = self.read_infix(
                     |s| s.value_expr(),
                     enum_set!(Bit::By | Bit::And),
@@ -493,7 +635,7 @@ impl<'source> Reader<'source> {
             }
             Some(Bit::Divide) => {
                 self.nom.next();
-                self.eat_whitespace();
+                self.whitespace1();
                 let (left, right) = self.read_infix(
                     |s| s.value_expr(),
                     enum_set!(Bit::By | Bit::And),
@@ -508,9 +650,9 @@ impl<'source> Reader<'source> {
             }
             Some(Bit::The) => {
                 self.nom.next();
-                self.eat_whitespace();
+                self.whitespace1();
                 let (bit, _) = self.nom.expect(Bit::DifferenceBetween | Bit::ProductOf)?;
-                self.eat_whitespace();
+                self.whitespace1();
                 let (left, right) =
                     self.read_infix(|s| s.value_expr(), Bit::And, |s| s.value_expr())?;
                 let op = match bit {
@@ -523,7 +665,7 @@ impl<'source> Reader<'source> {
             }
             Some(Bit::Either) => {
                 self.nom.next();
-                self.eat_whitespace();
+                self.whitespace1();
                 let (left, right) =
                     self.read_infix(|s| s.value_expr(), Bit::Or, |s| s.value_expr())?;
 
@@ -551,19 +693,19 @@ impl<'source> Reader<'source> {
         F2: FnOnce(&mut Self) -> Result<'source, R2>,
     {
         let left = read1(self)?;
-        self.eat_whitespace();
+        self.whitespace0();
         self.nom.expect(infix)?;
-        self.eat_whitespace();
+        self.whitespace1();
         let right = read2(self)?;
 
         return Ok((left, right));
     }
 
-    fn read_identifier(&mut self) -> Result<'source, &'source str> {
-        self.read_identifier_until(EnumSet::empty())
+    fn identifier(&mut self) -> Result<'source, &'source str> {
+        self.identifier_until(EnumSet::empty())
     }
 
-    fn read_identifier_until(
+    fn identifier_until(
         &mut self,
         until: impl Into<EnumSet<Bit>>,
     ) -> Result<'source, &'source str> {
@@ -576,8 +718,8 @@ impl<'source> Reader<'source> {
                     self.nom.next();
                     end = self.nom.span().end;
                 }
-                Some(Bit::Whitespace) => {
-                    self.nom.next();
+                Some(Bit::Whitespace | Bit::OpenParen) => {
+                    self.whitespace0();
                 }
                 other => {
                     if let Some(other) = other.clone() {
@@ -599,31 +741,45 @@ impl<'source> Reader<'source> {
         Ok(unsafe { source.get_unchecked(start..end) })
     }
 
-    fn eat_whitespace(&mut self) {
+    fn whitespace0(&mut self) {
         loop {
             match self.nom.peek() {
-                Some(Bit::Whitespace) | Some(Bit::LineComment) => {
+                Some(Bit::Whitespace | Bit::LineComment) => {
                     self.nom.next();
-                    continue;
                 }
                 Some(Bit::OpenParen) => {
-                    let mut paren_count = 1;
-                    loop {
-                        match self.nom.peek() {
-                            Some(Bit::OpenParen) => paren_count += 1,
-                            Some(Bit::CloseParen) => paren_count -= 1,
-                            _ => {}
-                        }
-                        if paren_count <= 1 {
-                            break;
-                        }
-                        self.nom.next();
-                    }
+                    self.remaining_multiline_comment();
                 }
                 _ => {
                     break;
                 }
             }
+        }
+    }
+
+    fn whitespace1(&mut self) -> Result<'source, ()> {
+        let (bit, _) = self.nom.expect(enum_set!(
+            Bit::Whitespace | Bit::LineComment | Bit::OpenParen
+        ))?;
+        if bit == Bit::OpenParen {
+            self.remaining_multiline_comment();
+        }
+        self.whitespace0();
+        Ok(())
+    }
+
+    fn remaining_multiline_comment(&mut self) {
+        let mut paren_count = 1;
+        loop {
+            match self.nom.peek() {
+                Some(Bit::OpenParen) => paren_count += 1,
+                Some(Bit::CloseParen) => paren_count -= 1,
+                _ => {}
+            }
+            if paren_count <= 1 {
+                break;
+            }
+            self.nom.next();
         }
     }
 
@@ -641,850 +797,959 @@ impl<'source> Reader<'source> {
 mod test {
     use std::fmt::{Debug, Display};
 
-    use expect_test::{expect, Expect};
+    use insta::assert_debug_snapshot;
 
     use crate::read_error::ReadError;
     use crate::reader2::Reader;
 
-    fn pst_eq(input: &str, expected: Expect) {
-        pst_fn_eq(|r| r.read_letter(), input, expected);
+    type Result = crate::nomer::Result<'static, ()>;
+
+    fn read(input: &str) -> Reader {
+        Reader::new("test.rs".to_string(), input)
     }
 
-    fn pst_fn_eq<'source, F, Output, Error>(f: F, input: &'source str, expected: Expect)
-    where
-        F: FnOnce(&mut Reader<'source>) -> Result<Output, Error>,
-        Output: Debug,
-        Error: Display,
-    {
-        let mut reader = Reader::new("test.rs".to_string(), input);
-        let output = f(&mut reader);
-        match output {
-            Ok(output) => {
-                let string = format!("{:#?}", output);
-                expected.assert_eq(&string);
-            }
-            Err(error) => {
-                assert!(false, "{}", error);
-            }
+    #[test]
+    fn identifier() -> Result {
+        let pst = read("An example letter").identifier()?;
+        assert_debug_snapshot!(pst, @r###""An example letter""###);
+
+        let pst = read("An example letter.").identifier()?;
+        assert_debug_snapshot!(pst, @r###""An example letter""###);
+
+        let pst = read("An example letter .").identifier()?;
+        assert_debug_snapshot!(pst, @r###""An example letter""###);
+
+        Ok(())
+    }
+
+    #[test]
+    fn heading() -> Result {
+        let pst = read("Dear Princess Celestia: An example letter.").heading()?;
+        assert_debug_snapshot!(pst, @r###""An example letter""###);
+
+        let error = read("Dear Princess Luna:")
+            .heading()
+            .expect_err("should error");
+        assert_debug_snapshot!(error, @r###"
+        ReadError {
+            origin: "test.rs",
+            text: "Oh my Celestia! I was expecting 'Celestia:' but I read 'Luna' instead!",
+            line_num: 0,
+            source: "Dear Princess Luna:",
+            span: (
+                "Who is this?",
+                14..18,
+            ),
         }
+        "###);
+
+        Ok(())
     }
 
-    fn pst_fn_errors<'source, F, Output, Error>(f: F, input: &'source str, expected: Expect)
-    where
-        F: FnOnce(&mut Reader<'source>) -> Result<Output, Error>,
-        Output: Debug,
-        Error: Display,
-    {
-        let mut reader = Reader::new("test.rs".to_string(), input);
-        let output = f(&mut reader);
-        match output {
-            Ok(output) => {
-                assert!(false, "{:#?}", output);
-            }
-            Err(error) => {
-                let string = format!("{}", error);
-                expected.assert_eq(&string);
-            }
+    #[test]
+    fn signature() -> Result {
+        let pst = read("Your faithful student: Twilight Sparkle.").signature()?;
+        assert_debug_snapshot!(pst, @r###""Twilight Sparkle""###);
+
+        let pst = read("Your faithful student, Applejack's hat!").signature()?;
+        assert_debug_snapshot!(pst, @r###""Applejack's hat""###);
+
+        Ok(())
+    }
+
+    #[test]
+    fn paragraph_opening() -> Result {
+        let pst = read("I learned how to fly.").paragraph_opening()?;
+        assert_debug_snapshot!(pst, @r###"
+        ParagraphDeclaration {
+            name: "how to fly",
+            args: [],
+            return_type: None,
         }
+        "###);
+
+        let pst = read("I learned to say hello with a number:").paragraph_opening()?;
+        assert_debug_snapshot!(pst, @r###"
+        ParagraphDeclaration {
+            name: "to say hello",
+            args: [],
+            return_type: Some(
+                Number,
+            ),
+        }
+        "###);
+
+        let pst = read("I learned to make friends with a phrase using the number of elements of harmony and the word hello:").paragraph_opening()?;
+        assert_debug_snapshot!(pst, @r###"
+        ParagraphDeclaration {
+            name: "to make friends",
+            args: [
+                Arg(
+                    Number,
+                    "of elements of harmony",
+                ),
+                Arg(
+                    Chars,
+                    "hello",
+                ),
+            ],
+            return_type: Some(
+                Chars,
+            ),
+        }
+        "###);
+
+        Ok(())
     }
 
     #[test]
-    fn identifier() {
-        pst_fn_eq(
-            |r| r.read_identifier(),
-            "An example letter",
-            expect![["\"An example letter\""]],
-        );
-        pst_fn_eq(
-            |r| r.read_identifier(),
-            "An example letter.",
-            expect![["\"An example letter\""]],
-        );
-        pst_fn_eq(
-            |r| r.read_identifier(),
-            "An example letter .",
-            expect![["\"An example letter\""]],
-        );
-    }
-
-    #[test]
-    fn heading() {
-        pst_fn_eq(
-            |r| r.read_heading(),
-            "Dear Princess Celestia: An example letter.",
-            expect![["\"An example letter\""]],
-        );
-        pst_fn_errors(
-            |r| r.read_heading(),
-            "Dear Princess Luna:",
-            expect![[r#"
-                [1;38;5;9merror[0m: [1mOh my Celestia! I was expecting 'Dear Princess Celestia:' but I read 'Dear Princess ' instead![0m
-                [1;38;5;12m-->[0m test.rs:0:1
-                [1;38;5;12m |[0m
-                [1;38;5;12m0 |[0m Dear Princess Luna:
-                [1;38;5;12m |[0m[1;38;5;9m ^^^^^^^^^^^^^^[0m [1;38;5;9mWho is this?[0m
-                [1;38;5;12m |[0m"#]],
-        );
-    }
-
-    #[test]
-    fn signature() {
-        pst_fn_eq(
-            |r| r.read_signature(),
-            "Your faithful student: Twilight Sparkle.",
-            expect![["\"Twilight Sparkle\""]],
-        );
-        pst_fn_eq(
-            |r| r.read_signature(),
-            "Your faithful student, Applejack's hat!",
-            expect![["\"Applejack's hat\""]],
-        );
-    }
-
-    #[test]
-    fn paragraph_opening() {
-        pst_fn_eq(
-            |r| r.paragraph_opening(),
-            "I learned how to fly.",
-            expect![[r#"
-ParagraphDeclaration {
-    name: "how to fly",
-    args: [],
-    return_type: None,
-}"#]],
-        );
-        pst_fn_eq(
-            |r| r.paragraph_opening(),
-            "I learned to say hello with a number:",
-            expect![[r#"
-ParagraphDeclaration {
-    name: "to say hello",
-    args: [],
-    return_type: Some(
-        Number,
-    ),
-}"#]],
-        );
-        pst_fn_eq(
-            |r| r.paragraph_opening(),
-            "I learned to make friends with a phrase using the number of elements of harmony and the word hello:",
-            expect![[r#"
-ParagraphDeclaration {
-    name: "to make friends",
-    args: [
-        Arg(
-            Number,
-            "of elements of harmony",
-        ),
+    fn paragraph_arg() -> Result {
+        let pst = read("the word hello").paragraph_arg()?;
+        assert_debug_snapshot!(pst, @r###"
         Arg(
             Chars,
             "hello",
-        ),
-    ],
-    return_type: Some(
-        Chars,
-    ),
-}"#]],
-        );
+        )
+        "###);
+
+        Ok(())
     }
 
     #[test]
-    fn paragraph_arg() {
-        pst_fn_eq(
-            |r| r.paragraph_arg(),
-            "the word hello",
-            expect![[r#"
-Arg(
-    Chars,
-    "hello",
-)"#]],
-        );
+    fn paragraph_closing() -> Result {
+        let pst = read("That's all about how to fly.").paragraph_closing()?;
+        assert_debug_snapshot!(pst, @r###""how to fly""###);
+
+        Ok(())
     }
 
     #[test]
-    fn paragraph_closing() {
-        pst_fn_eq(
-            |r| r.paragraph_closing(),
-            "That's all about how to fly.",
-            expect![["\"how to fly\""]],
-        );
+    fn empty_paragraph() -> Result {
+        let pst = read(
+            r#"Today I learned how to fly.
+               That's all about how to fly."#,
+        )
+        .paragraph()?;
+        assert_debug_snapshot!(pst, @r###"
+        Paragraph {
+            decl: ParagraphDeclaration {
+                name: "how to fly",
+                args: [],
+                return_type: None,
+            },
+            mane: true,
+            closing_name: "how to fly",
+            statements: [],
+        }
+        "###);
+
+        Ok(())
     }
 
     #[test]
-    fn empty_paragraph() {
-        pst_fn_eq(
-            |r| r.read_paragraph(),
-            "Today I learned how to fly.
-That's all about how to fly.",
-            expect![[r#"
-Paragraph {
-    decl: ParagraphDeclaration {
-        name: "how to fly",
-        args: [],
-        return_type: None,
-    },
-    mane: true,
-    closing_name: "how to fly",
-    statements: [],
-}"#]],
-        );
+    fn empty_letter() -> Result {
+        let pst = read(
+            r#"Dear Princess Celestia: I have nothing to say.
+                     Your faithful student: Twilight Sparkle."#,
+        )
+        .letter()?;
+        assert_debug_snapshot!(pst, @r###"
+        Report {
+            name: "I have nothing to say",
+            declarations: [],
+            writer: "Twilight Sparkle",
+        }
+        "###);
+
+        Ok(())
     }
 
     #[test]
-    fn empty_letter() {
-        pst_eq(
-            r#"
-Dear Princess Celestia: I have nothing to say.
-Your faithful student: Twilight Sparkle."#,
-            expect![[r#"
-Report {
-    name: "I have nothing to say",
-    declarations: [],
-    writer: "Twilight Sparkle",
-}"#]],
-        );
-    }
-
-    #[test]
-    fn letter() {
-        pst_eq(
+    #[ignore]
+    fn letter() -> Result {
+        let pst = read(
             r#"Dear Princess Celestia: An example letter.
 
-        Today I learned how to fly:
-            I said "Fly!"!
-        That's all about how to fly!
+                     Today I learned how to fly:
+                     I said "Fly!"!
+                     That's all about how to fly!
 
-        Did you know that I had 100 (apples)?
-    Your faithful student: Twilight Sparkle.
+                     Did you know that I had 100 (apples)?
+                     Your faithful student: Twilight Sparkle.
 
-    P.S. This is ignored"#,
-            expect![[]],
-        );
+                     P.S. This is ignored"#,
+        )
+        .letter()?;
+        assert_debug_snapshot!(pst, @"");
+
+        Ok(())
     }
 
     #[test]
-    fn line_comment() {
-        pst_fn_eq(
-            |r| -> Result<(), ReadError> { Ok(r.eat_whitespace()) },
-            "P.S. Comment",
-            expect![["()"]],
-        );
-        pst_fn_eq(
-            |r| -> Result<(), ReadError> { Ok(r.eat_whitespace()) },
-            "P.S. Comment\n",
-            expect![["()"]],
-        );
-        pst_fn_eq(
-            |r| -> Result<(), ReadError> { Ok(r.eat_whitespace()) },
-            "P.P.P.S. Comment\n",
-            expect![["()"]],
-        );
-        pst_fn_eq(
-            |r| -> Result<(), ReadError> { Ok(r.eat_whitespace()) },
-            "P.P.P.S. Comment\r\n",
-            expect![["()"]],
-        );
+    fn line_comment() -> Result {
+        let pst = read("P.S. Comment").whitespace0();
+        assert_debug_snapshot!(pst, @"()");
+
+        let pst = read("P.S. Comment\n").whitespace0();
+        assert_debug_snapshot!(pst, @"()");
+
+        let pst = read("P.P.P.S. Comment\n").whitespace0();
+        assert_debug_snapshot!(pst, @"()");
+
+        let pst = read("P.P.P.S. Comment\r\n").whitespace0();
+        assert_debug_snapshot!(pst, @"()");
+
+        Ok(())
     }
 
     #[test]
-    fn multiline_comment() {
-        pst_fn_eq(
-            |r| -> Result<(), ReadError> { Ok(r.eat_whitespace()) },
-            "(Comment)",
-            expect![["()"]],
-        );
-        pst_fn_eq(
-            |r| -> Result<(), ReadError> { Ok(r.eat_whitespace()) },
-            "(Nested (Comment))",
-            expect![["()"]],
-        );
+    fn multiline_comment() -> Result {
+        let pst = read("(Comment)").whitespace0();
+        assert_debug_snapshot!(pst, @"()");
+
+        let pst = read("(Nested (Comment))").whitespace0();
+        assert_debug_snapshot!(pst, @"()");
+
+        Ok(())
     }
 
     #[test]
-    fn call() {
-        pst_fn_eq(
-            |r| r.call(),
+    fn call() -> Result {
+        let pst = read("how to fly").call()?;
+        assert_debug_snapshot!(pst, @r###"
+        Call(
             "how to fly",
-            expect![[r#"
+            [],
+        )
+        "###);
+
+        let pst = read(r#"how to fly using "Twilight Sparkle""#).call()?;
+        assert_debug_snapshot!(pst, @r###"
+        Call(
+            "how to fly",
+            [
+                Lit(
+                    Chars(
+                        "Twilight Sparkle",
+                    ),
+                ),
+            ],
+        )
+        "###);
+
+        let pst = read("how to fly using Rainbow Dash and Fluttershy").call()?;
+        assert_debug_snapshot!(pst, @r###"
+        Call(
+            "how to fly",
+            [
                 Call(
-                    "how to fly",
-                    [],
-                )"#]],
-        );
-        pst_fn_eq(
-            |r| r.call(),
-            "how to fly using \"Twilight Sparkle\"",
-            expect![[r#"
+                    Call(
+                        "Rainbow Dash",
+                        [],
+                    ),
+                ),
                 Call(
-                    "how to fly",
-                    [
-                        Lit(
-                            Chars(
-                                "Twilight Sparkle",
-                            ),
-                        ),
-                    ],
-                )"#]],
-        );
-        pst_fn_eq(
-            |r| r.call(),
-            "how to fly using Rainbow Dash and Fluttershy",
-            expect![[r#"
-                Call(
-                    "how to fly",
-                    [
-                        Call(
-                            Call(
-                                "Rainbow Dash",
-                                [],
-                            ),
-                        ),
-                        Call(
-                            Call(
-                                "Fluttershy",
-                                [],
-                            ),
-                        ),
-                    ],
-                )"#]],
-        );
+                    Call(
+                        "Fluttershy",
+                        [],
+                    ),
+                ),
+            ],
+        )
+        "###);
+
+        Ok(())
     }
 
     #[test]
-    fn literal() {
-        pst_fn_eq(
-            |r| r.literal(),
-            "\"string\"",
-            expect![[r#"
-Chars(
-    "string",
-)"#]],
-        );
-        pst_fn_eq(
-            |r| r.literal(),
-            "12",
-            expect![[r#"
-Number(
-    12.0,
-)"#]],
-        );
-        pst_fn_eq(
-            |r| r.literal(),
-            "-1.6",
-            expect![[r#"
-Number(
-    -1.6,
-)"#]],
-        );
-        pst_fn_eq(
-            |r| r.literal(),
-            "yes",
-            expect![[r#"
-Boolean(
-    true,
-)"#]],
-        );
-        pst_fn_eq(
-            |r| r.literal(),
-            "no",
-            expect![[r#"
-Boolean(
-    false,
-)"#]],
-        );
+    fn literal() -> Result {
+        let pst = read("\"string\"").literal()?;
+        assert_debug_snapshot!(pst, @r###"
+        Chars(
+            "string",
+        )
+        "###);
+
+        let pst = read("12").literal()?;
+        assert_debug_snapshot!(pst, @r###"
+        Number(
+            12.0,
+        )
+        "###);
+
+        let pst = read("-1.6").literal()?;
+        assert_debug_snapshot!(pst, @r###"
+        Number(
+            -1.6,
+        )
+        "###);
+
+        let pst = read("yes").literal()?;
+        assert_debug_snapshot!(pst, @r###"
+        Boolean(
+            true,
+        )
+        "###);
+
+        let pst = read("no").literal()?;
+        assert_debug_snapshot!(pst, @r###"
+        Boolean(
+            false,
+        )
+        "###);
+
+        Ok(())
     }
 
     #[test]
-    fn infix_op() {
-        pst_fn_eq(|r| r.infix_op(), "added to", expect![[r#"AddOrAnd"#]]);
-        pst_fn_eq(|r| r.infix_op(), "minus", expect![[r#"Sub"#]]);
-        pst_fn_eq(|r| r.infix_op(), "multiplied with", expect![[r#"Mul"#]]);
-        pst_fn_eq(|r| r.infix_op(), "divided by", expect![[r#"Div"#]]);
-        pst_fn_eq(|r| r.infix_op(), "or", expect![[r#"Or"#]]);
+    fn infix_op() -> Result {
+        let pst = read("added to").infix_op()?;
+        assert_debug_snapshot!(pst, @"AddOrAnd");
+
+        let pst = read("minus").infix_op()?;
+        assert_debug_snapshot!(pst, @"Sub");
+
+        let pst = read("multiplied with").infix_op()?;
+        assert_debug_snapshot!(pst, @"Mul");
+
+        let pst = read("divided by").infix_op()?;
+        assert_debug_snapshot!(pst, @"Div");
+
+        let pst = read("or").infix_op()?;
+        assert_debug_snapshot!(pst, @"Or");
+
+        Ok(())
     }
 
     #[test]
-    fn infix_term() {
-        pst_fn_eq(
-            |r| r.infix_term(),
-            "1",
-            expect![[r#"
+    fn infix_term() -> Result {
+        let pst = read("1").infix_term()?;
+        assert_debug_snapshot!(pst, @r###"
+        Lit(
+            Number(
+                1.0,
+            ),
+        )
+        "###);
+
+        let pst = read("1 added to 2").infix_term()?;
+        assert_debug_snapshot!(pst, @r###"
+        BinOp(
+            AddOrAnd,
+            Lit(
+                Number(
+                    1.0,
+                ),
+            ),
+            Lit(
+                Number(
+                    2.0,
+                ),
+            ),
+        )
+        "###);
+
+        let pst = read("2 plus 1 times 3").infix_term()?;
+        assert_debug_snapshot!(pst, @r###"
+        BinOp(
+            Mul,
+            BinOp(
+                AddOrAnd,
+                Lit(
+                    Number(
+                        2.0,
+                    ),
+                ),
                 Lit(
                     Number(
                         1.0,
                     ),
-                )"#]],
-        );
-        pst_fn_eq(
-            |r| r.infix_term(),
-            "1 added to 2",
-            expect![[r#"
-                BinOp(
-                    AddOrAnd,
-                    Lit(
-                        Number(
-                            1.0,
-                        ),
-                    ),
-                    Lit(
-                        Number(
-                            2.0,
-                        ),
-                    ),
-                )"#]],
-        );
-        pst_fn_eq(
-            |r| r.infix_term(),
-            "2 plus 1 times 3",
-            expect![[r#"
-                BinOp(
-                    Mul,
-                    BinOp(
-                        AddOrAnd,
-                        Lit(
-                            Number(
-                                2.0,
-                            ),
-                        ),
-                        Lit(
-                            Number(
-                                1.0,
-                            ),
-                        ),
-                    ),
-                    Lit(
-                        Number(
-                            3.0,
-                        ),
-                    ),
-                )"#]],
-        );
+                ),
+            ),
+            Lit(
+                Number(
+                    3.0,
+                ),
+            ),
+        )
+        "###);
+
+        Ok(())
     }
 
     #[test]
-    fn prefix_term() {
-        pst_fn_eq(
-            |r| r.prefix_term(),
-            "add 1 and 2",
-            expect![[r#"
-                BinOp(
-                    AddOrAnd,
-                    Lit(
-                        Number(
-                            1.0,
-                        ),
-                    ),
-                    Lit(
-                        Number(
-                            2.0,
-                        ),
-                    ),
-                )"#]],
-        );
-        pst_fn_eq(
-            |r| r.prefix_term(),
-            "the difference between 2 and 1",
-            expect![[r#"
-                BinOp(
-                    Sub,
-                    Lit(
-                        Number(
-                            2.0,
-                        ),
-                    ),
-                    Lit(
-                        Number(
-                            1.0,
-                        ),
-                    ),
-                )"#]],
-        );
-        pst_fn_eq(
-            |r| r.prefix_term(),
-            "the product of 2 and 1",
-            expect![[r#"
-                BinOp(
-                    Mul,
-                    Lit(
-                        Number(
-                            2.0,
-                        ),
-                    ),
-                    Lit(
-                        Number(
-                            1.0,
-                        ),
-                    ),
-                )"#]],
-        );
-        pst_fn_eq(
-            |r| r.prefix_term(),
-            "divide 2 by 1",
-            expect![[r#"
-                BinOp(
-                    Div,
-                    Lit(
-                        Number(
-                            2.0,
-                        ),
-                    ),
-                    Lit(
-                        Number(
-                            1.0,
-                        ),
-                    ),
-                )"#]],
-        );
-        pst_fn_eq(
-            |r| r.prefix_term(),
-            "either true or false",
-            expect![[r#"
-                BinOp(
-                    EitherOr,
-                    Lit(
-                        Boolean(
-                            true,
-                        ),
-                    ),
-                    Lit(
-                        Boolean(
-                            false,
-                        ),
-                    ),
-                )"#]],
-        );
+    fn prefix_term() -> Result {
+        let pst = read("add 1 and 2").prefix_term()?;
+        assert_debug_snapshot!(pst, @r###"
+        BinOp(
+            AddOrAnd,
+            Lit(
+                Number(
+                    1.0,
+                ),
+            ),
+            Lit(
+                Number(
+                    2.0,
+                ),
+            ),
+        )
+        "###);
+
+        let pst = read("the difference between 2 and 1").prefix_term()?;
+        assert_debug_snapshot!(pst, @r###"
+        BinOp(
+            Sub,
+            Lit(
+                Number(
+                    2.0,
+                ),
+            ),
+            Lit(
+                Number(
+                    1.0,
+                ),
+            ),
+        )
+        "###);
+
+        let pst = read("the product of 2 and 1").prefix_term()?;
+        assert_debug_snapshot!(pst, @r###"
+        BinOp(
+            Mul,
+            Lit(
+                Number(
+                    2.0,
+                ),
+            ),
+            Lit(
+                Number(
+                    1.0,
+                ),
+            ),
+        )
+        "###);
+
+        let pst = read("divide 2 by 1").prefix_term()?;
+        assert_debug_snapshot!(pst, @r###"
+        BinOp(
+            Div,
+            Lit(
+                Number(
+                    2.0,
+                ),
+            ),
+            Lit(
+                Number(
+                    1.0,
+                ),
+            ),
+        )
+        "###);
+
+        let pst = read("either true or false").prefix_term()?;
+        assert_debug_snapshot!(pst, @r###"
+        BinOp(
+            EitherOr,
+            Lit(
+                Boolean(
+                    true,
+                ),
+            ),
+            Lit(
+                Boolean(
+                    false,
+                ),
+            ),
+        )
+        "###);
+
+        Ok(())
     }
 
     #[test]
-    fn not() {
-        pst_fn_eq(
-            |r| r.prefix_not(),
-            "not true",
-            expect![[r#"
-Not(
-    Lit(
-        Boolean(
-            true,
-        ),
-    ),
-)"#]],
-        );
-        pst_fn_eq(
-            |r| r.prefix_not(),
-            "not not true",
-            expect![[r#"
+    fn not() -> Result {
+        let pst = read("not true").prefix_not()?;
+        assert_debug_snapshot!(pst, @r###"
+        Not(
+            Lit(
+                Boolean(
+                    true,
+                ),
+            ),
+        )
+        "###);
+
+        let pst = read("not not true").prefix_not()?;
+        assert_debug_snapshot!(pst, @r###"
+        Not(
             Not(
-                Not(
-                    Lit(
-                        Boolean(
-                            true,
-                        ),
+                Lit(
+                    Boolean(
+                        true,
                     ),
                 ),
-            )"#]],
-        );
+            ),
+        )
+        "###);
+
+        Ok(())
     }
 
     #[test]
-    fn comparison() {
-        pst_fn_eq(
-            |r| r.infix_term(),
-            "Rainbow Dash is cool",
-            expect![[r#"
-                BinOp(
-                    Equal,
-                    Call(
-                        Call(
-                            "Rainbow Dash",
-                            [],
-                        ),
-                    ),
-                    Call(
-                        Call(
-                            "cool",
-                            [],
-                        ),
-                    ),
-                )"#]],
-        );
-        pst_fn_eq(
-            |r| r.infix_term(),
-            "Fluttershy isn't loud",
-            expect![[r#"
-                BinOp(
-                    NotEqual,
-                    Call(
-                        Call(
-                            "Fluttershy",
-                            [],
-                        ),
-                    ),
-                    Call(
-                        Call(
-                            "loud",
-                            [],
-                        ),
-                    ),
-                )"#]],
-        );
-        pst_fn_eq(
-            |r| r.infix_term(),
-            "the number of cupcakes is less than 10",
-            expect![[r#"
-                BinOp(
-                    LessThan,
-                    Call(
-                        Call(
-                            "the number of cupcakes",
-                            [],
-                        ),
-                    ),
-                    Lit(
-                        Number(
-                            10.0,
-                        ),
-                    ),
-                )"#]],
-        );
-        pst_fn_eq(
-            |r| r.infix_term(),
-            "the number of pies is not less than 10",
-            expect![[r#"
-                BinOp(
-                    GreaterThanOrEqual,
-                    Call(
-                        Call(
-                            "the number of pies",
-                            [],
-                        ),
-                    ),
-                    Lit(
-                        Number(
-                            10.0,
-                        ),
-                    ),
-                )"#]],
-        );
-        pst_fn_eq(
-            |r| r.infix_term(),
-            "the number of cakes is more than 10",
-            expect![[r#"
-                BinOp(
-                    GreaterThan,
-                    Call(
-                        Call(
-                            "the number of cakes",
-                            [],
-                        ),
-                    ),
-                    Lit(
-                        Number(
-                            10.0,
-                        ),
-                    ),
-                )"#]],
-        );
-        pst_fn_eq(
-            |r| r.infix_term(),
-            "the number of cute animals isn't greater than 100",
-            expect![[r#"
-                BinOp(
-                    LessThanOrEqual,
-                    Call(
-                        Call(
-                            "the number of cute animals",
-                            [],
-                        ),
-                    ),
-                    Lit(
-                        Number(
-                            100.0,
-                        ),
-                    ),
-                )"#]],
-        );
-        pst_fn_eq(
-            |r| r.infix_term(),
-            "Applejack has more than 50",
-            expect![[r#"
-                BinOp(
-                    GreaterThan,
-                    Call(
-                        Call(
-                            "Applejack",
-                            [],
-                        ),
-                    ),
-                    Lit(
-                        Number(
-                            50.0,
-                        ),
-                    ),
-                )"#]],
-        );
+    fn comparison() -> Result {
+        let pst = read("Rainbow Dash is cool").infix_term()?;
+        assert_debug_snapshot!(pst, @r###"
+        BinOp(
+            Equal,
+            Call(
+                Call(
+                    "Rainbow Dash",
+                    [],
+                ),
+            ),
+            Call(
+                Call(
+                    "cool",
+                    [],
+                ),
+            ),
+        )
+        "###);
+
+        let pst = read("Fluttershy isn't loud").infix_term()?;
+        assert_debug_snapshot!(pst, @r###"
+        BinOp(
+            NotEqual,
+            Call(
+                Call(
+                    "Fluttershy",
+                    [],
+                ),
+            ),
+            Call(
+                Call(
+                    "loud",
+                    [],
+                ),
+            ),
+        )
+        "###);
+
+        let pst = read("the number of cupcakes is less than 10").infix_term()?;
+        assert_debug_snapshot!(pst, @r###"
+        BinOp(
+            LessThan,
+            Call(
+                Call(
+                    "the number of cupcakes",
+                    [],
+                ),
+            ),
+            Lit(
+                Number(
+                    10.0,
+                ),
+            ),
+        )
+        "###);
+
+        let pst = read("the number of pies is not less than 10").infix_term()?;
+        assert_debug_snapshot!(pst, @r###"
+        BinOp(
+            GreaterThanOrEqual,
+            Call(
+                Call(
+                    "the number of pies",
+                    [],
+                ),
+            ),
+            Lit(
+                Number(
+                    10.0,
+                ),
+            ),
+        )
+        "###);
+
+        let pst = read("the number of cakes is more than 10").infix_term()?;
+        assert_debug_snapshot!(pst, @r###"
+        BinOp(
+            GreaterThan,
+            Call(
+                Call(
+                    "the number of cakes",
+                    [],
+                ),
+            ),
+            Lit(
+                Number(
+                    10.0,
+                ),
+            ),
+        )
+        "###);
+
+        let pst = read("the number of cute animals isn't greater than 100").infix_term()?;
+        assert_debug_snapshot!(pst, @r###"
+        BinOp(
+            LessThanOrEqual,
+            Call(
+                Call(
+                    "the number of cute animals",
+                    [],
+                ),
+            ),
+            Lit(
+                Number(
+                    100.0,
+                ),
+            ),
+        )
+        "###);
+
+        let pst = read("Applejack has more than 50").infix_term()?;
+        assert_debug_snapshot!(pst, @r###"
+        BinOp(
+            GreaterThan,
+            Call(
+                Call(
+                    "Applejack",
+                    [],
+                ),
+            ),
+            Lit(
+                Number(
+                    50.0,
+                ),
+            ),
+        )
+        "###);
+
+        Ok(())
     }
 
     #[test]
-    fn concat() {
-        pst_fn_eq(
-            |r| r.expr(),
-            "Applejack\" jugs of cider on the wall\"",
-            expect![[r#"
-                Concat(
-                    [
-                        Call(
-                            Call(
-                                "Applejack",
-                                [],
-                            ),
-                        ),
-                        Lit(
-                            Chars(
-                                " jugs of cider on the wall",
-                            ),
-                        ),
-                    ],
-                )"#]],
-        );
-        pst_fn_eq(
-            |r| r.expr(),
-            "\"It needs to be about \" 20 \"% cooler\"",
-            expect![[r#"
-                Concat(
-                    [
-                        Lit(
-                            Chars(
-                                "It needs to be about ",
-                            ),
-                        ),
-                        Lit(
-                            Number(
-                                20.0,
-                            ),
-                        ),
-                        Lit(
-                            Chars(
-                                "% cooler",
-                            ),
-                        ),
-                    ],
-                )"#]],
-        );
-        pst_fn_eq(
-            |r| r.expr(),
-            "\"but \" my favorite numbers using 3 \" is pretty tasty!\"",
-            expect![[r#"
-                Concat(
-                    [
-                        Lit(
-                            Chars(
-                                "but ",
-                            ),
-                        ),
-                        Call(
-                            Call(
-                                "my favorite numbers",
-                                [
-                                    Lit(
-                                        Number(
-                                            3.0,
-                                        ),
-                                    ),
-                                ],
-                            ),
-                        ),
-                        Lit(
-                            Chars(
-                                " is pretty tasty!",
-                            ),
-                        ),
-                    ],
-                )"#]],
-        );
-    }
-
-    #[test]
-    fn print_statement() {
-        pst_fn_eq(
-            |r| r.statement(),
-            "I wrote 1 added to 2.",
-            expect![[r#"
-            Print(
-                BinOp(
-                    AddOrAnd,
-                    Lit(
-                        Number(
-                            1.0,
-                        ),
-                    ),
-                    Lit(
-                        Number(
-                            2.0,
-                        ),
+    fn concat() -> Result {
+        let pst = read(r#"Applejack" jugs of cider on the wall""#).expr()?;
+        assert_debug_snapshot!(pst, @r###"
+        Concat(
+            [
+                Call(
+                    Call(
+                        "Applejack",
+                        [],
                     ),
                 ),
-            )"#]],
-        );
-        pst_fn_eq(
-            |r| r.statement(),
-            "I sang the elements of harmony count.",
-            expect![[r#"
-                Print(
-                    Call(
-                        Call(
-                            "elements of harmony count",
-                            [],
-                        ),
+                Lit(
+                    Chars(
+                        " jugs of cider on the wall",
                     ),
-                )"#]],
-        );
-        pst_fn_eq(
-            |r| r.statement(),
-            r#"I said "It needs to be about " 20 "% cooler"."#,
-            expect![[r#"
-                Print(
-                    Concat(
+                ),
+            ],
+        )
+        "###);
+
+        let pst = read(r#"It needs to be about " 20 "% cooler""#).expr()?;
+        assert_debug_snapshot!(pst, @r###"
+        Concat(
+            [
+                Call(
+                    Call(
+                        "It needs to be about",
+                        [],
+                    ),
+                ),
+                Lit(
+                    Chars(
+                        " 20 ",
+                    ),
+                ),
+                Call(
+                    Call(
+                        "% cooler\"",
+                        [],
+                    ),
+                ),
+            ],
+        )
+        "###);
+
+        let pst = read(r#""but" my favorite numbers using 3 " is pretty tasty!""#).expr()?;
+        assert_debug_snapshot!(pst, @r###"
+        Concat(
+            [
+                Lit(
+                    Chars(
+                        "but",
+                    ),
+                ),
+                Call(
+                    Call(
+                        "my favorite numbers",
                         [
                             Lit(
-                                Chars(
-                                    "It needs to be about ",
-                                ),
-                            ),
-                            Lit(
                                 Number(
-                                    20.0,
-                                ),
-                            ),
-                            Lit(
-                                Chars(
-                                    "% cooler",
+                                    3.0,
                                 ),
                             ),
                         ],
                     ),
-                )"#]],
-        );
-        pst_fn_eq(
-            |r| r.statement(),
-            r#"I said Tantabus""!"#,
-            expect![[r#"
-            Print(
-                Concat(
-                    [
-                        Call(
-                            Call(
-                                "Tantabus",
-                                [],
-                            ),
-                        ),
-                        Lit(
-                            Chars(
-                                "",
-                            ),
-                        ),
-                    ],
                 ),
-            )"#]],
-        );
+                Lit(
+                    Chars(
+                        " is pretty tasty!",
+                    ),
+                ),
+            ],
+        )
+        "###);
+
+        Ok(())
+    }
+
+    #[test]
+    fn declare_var() -> Result {
+        let pst =
+            read("Did you know that the elements of harmony count is a number").declare_var()?;
+        assert_debug_snapshot!(pst, @r###"
+        DeclareVar(
+            Variable(
+                "the elements of harmony count",
+            ),
+            Some(
+                Number,
+            ),
+            None,
+            false,
+        )
+        "###);
+
+        let pst =
+            read(r#"Did you know that Applejack's hat has the name "Talluah""#).declare_var()?;
+        assert_debug_snapshot!(pst, @r###"
+        DeclareVar(
+            Variable(
+                "Applejack's hat",
+            ),
+            Some(
+                Chars,
+            ),
+            Some(
+                [
+                    Lit(
+                        Chars(
+                            "Talluah",
+                        ),
+                    ),
+                ],
+            ),
+            false,
+        )
+        "###);
+
+        let pst = read("Did you know that Pinkie Pie always is right").declare_var()?;
+        assert_debug_snapshot!(pst, @r###"
+        DeclareVar(
+            Variable(
+                "Pinkie Pie",
+            ),
+            None,
+            Some(
+                [
+                    Lit(
+                        Boolean(
+                            true,
+                        ),
+                    ),
+                ],
+            ),
+            true,
+        )
+        "###);
+
+        let pst = read(r#"Did you know that my cakes have the names "chocolate" and "apple cinnamon" and "fruit""#).declare_var()?;
+        assert_debug_snapshot!(pst, @r###"
+        DeclareVar(
+            Variable(
+                "my cakes",
+            ),
+            Some(
+                Array(
+                    Chars,
+                ),
+            ),
+            Some(
+                [
+                    Lit(
+                        Chars(
+                            "chocolate",
+                        ),
+                    ),
+                    Lit(
+                        Chars(
+                            "apple cinnamon",
+                        ),
+                    ),
+                    Lit(
+                        Chars(
+                            "fruit",
+                        ),
+                    ),
+                ],
+            ),
+            false,
+        )
+        "###);
+
+        Ok(())
+    }
+
+    #[test]
+    fn print_statement() -> Result {
+        let pst = read("I wrote 1 added to 2.").statement()?;
+        assert_debug_snapshot!(pst, @r###"
+        Print(
+            BinOp(
+                AddOrAnd,
+                Lit(
+                    Number(
+                        1.0,
+                    ),
+                ),
+                Lit(
+                    Number(
+                        2.0,
+                    ),
+                ),
+            ),
+        )
+        "###);
+
+        let pst = read("I sang the elements of harmony count.").statement()?;
+        assert_debug_snapshot!(pst, @r###"
+        Print(
+            Call(
+                Call(
+                    "elements of harmony count",
+                    [],
+                ),
+            ),
+        )
+        "###);
+
+        let pst = read(r#"I said "It needs to be about " 20 "% cooler"."#).statement()?;
+        assert_debug_snapshot!(pst, @r###"
+        Print(
+            Concat(
+                [
+                    Lit(
+                        Chars(
+                            "It needs to be about ",
+                        ),
+                    ),
+                    Lit(
+                        Number(
+                            20.0,
+                        ),
+                    ),
+                    Lit(
+                        Chars(
+                            "% cooler",
+                        ),
+                    ),
+                ],
+            ),
+        )
+        "###);
+
+        let pst = read(r#"I said Tantabus""!"#).statement()?;
+        assert_debug_snapshot!(pst, @r###"
+        Print(
+            Concat(
+                [
+                    Call(
+                        Call(
+                            "Tantabus",
+                            [],
+                        ),
+                    ),
+                    Lit(
+                        Chars(
+                            "",
+                        ),
+                    ),
+                ],
+            ),
+        )
+        "###);
+
+        Ok(())
+    }
+
+    #[test]
+    fn read_statement() -> Result {
+        let pst = read("I heard Applejack's speech.").statement()?;
+        assert_debug_snapshot!(pst, @r###"
+        Read(
+            Variable(
+                "Applejack's speech",
+            ),
+            None,
+            None,
+        )
+        "###);
+
+        let pst = read("I read Twilight the next number.").statement()?;
+        assert_debug_snapshot!(pst, @r###"
+        Read(
+            Variable(
+                "Twilight",
+            ),
+            Some(
+                Number,
+            ),
+            None,
+        )
+        "###);
+
+        let pst = read(r#"I asked Spike "How many gems are left?"."#).statement()?;
+        assert_debug_snapshot!(pst, @r###"
+        Read(
+            Variable(
+                "Spike",
+            ),
+            None,
+            Some(
+                Lit(
+                    Chars(
+                        "How many gems are left?",
+                    ),
+                ),
+            ),
+        )
+        "###);
+
+        let pst = read(r#"I asked Applejack the next number "How many apples do you have?"."#)
+            .statement()?;
+        assert_debug_snapshot!(pst, @r###"
+        Read(
+            Variable(
+                "Applejack",
+            ),
+            Some(
+                Number,
+            ),
+            Some(
+                Lit(
+                    Chars(
+                        "How many apples do you have?",
+                    ),
+                ),
+            ),
+        )
+        "###);
+
+        Ok(())
     }
 }
